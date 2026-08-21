@@ -162,6 +162,73 @@ function callTool(apiUrl, name, args, extraEnv = {}) {
 }
 
 
+
+/** One process, two tools/list calls, `gap` ms apart. */
+function listToolsTwice(apiUrl, gap) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [ENTRY], {
+      env: {
+        ...process.env,
+        DREAMLAYER_API_KEY: "dlr_live_test_key",
+        DREAMLAYER_API_URL: apiUrl,
+        // A one-second negative window, so the retry is observable inside a test.
+        DREAMLAYER_OPERATIONS_RETRY_MS: "1000",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    setTimeout(() => send({ jsonrpc: "2.0", id: 2, method: "tools/list" }), 300);
+    setTimeout(() => send({ jsonrpc: "2.0", id: 3, method: "tools/list" }), 300 + gap);
+    setTimeout(() => {
+      child.kill();
+      const msgs = stdout.split("\n").filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      const a = msgs.find((m) => m.id === 2), b = msgs.find((m) => m.id === 3);
+      if (!a || !b) { reject(new Error(`missing tools/list replies. stdout: ${stdout}`)); return; }
+      resolve([a.result.tools, b.result.tools]);
+    }, 300 + gap + 1800);
+  });
+}
+
+/** tools/list plus whatever the server wrote to stderr. */
+function listToolsWithStderr(apiUrl) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [ENTRY], {
+      env: { ...process.env, DREAMLAYER_API_KEY: "dlr_live_test_key", DREAMLAYER_API_URL: apiUrl },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+    const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    setTimeout(() => send({ jsonrpc: "2.0", id: 2, method: "tools/list" }), 300);
+    setTimeout(() => {
+      child.kill();
+      const reply = stdout.split("\n").filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
+        .find((m) => m.id === 2);
+      if (!reply) { reject(new Error(`no tools/list reply. stderr: ${stderr}`)); return; }
+      resolve({ tools: reply.result.tools, stderr });
+    }, 2600);
+  });
+}
+
 /** Spawn the server and complete one tools/list round trip. */
 function listTools(apiUrl) {
   return new Promise((resolve, reject) => {
@@ -396,4 +463,68 @@ test("a server that cannot be reached still lists tools, using the built-in list
     "background_remove",
     "upscale",
   ]);
+});
+
+test("a blip at startup does not pin the built-in list for the whole session", async () => {
+  // The bug this replaces: the fallback was cached exactly like a success. An MCP server
+  // is spawned once by its client and lives for hours or days, so one unreachable moment
+  // during the FIRST tools/list pinned the compiled list for the entire process with
+  // nothing ever retrying. The fix would have stopped working precisely when the machine
+  // was briefly offline at startup, which is the likeliest moment for it to be offline.
+  //
+  // Server refuses once, then answers. Both calls happen in ONE process, which is the
+  // whole point: the second must not be served from a remembered failure.
+  let refusals = 0;
+  const handler = fakeApi({ operations: ["text_to_image", "colorize"] });
+  const original = handler.server.listeners("request")[0];
+  handler.server.removeAllListeners("request");
+  handler.server.on("request", (request, response) => {
+    if (request.url === "/v1/capabilities" && refusals === 0) {
+      refusals += 1;
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "unavailable" } }));
+      return;
+    }
+    original(request, response);
+  });
+
+  const api = await listen(handler);
+  const tools = await listToolsTwice(api.url, 1200);
+  api.close();
+
+  assert.equal(refusals, 1, "the server should have refused exactly once");
+  const first = tools[0].find((t) => t.name === "dreamlayer_generate");
+  const second = tools[1].find((t) => t.name === "dreamlayer_generate");
+
+  // First call falls back, which is correct and deliberate.
+  assert.deepEqual(first.inputSchema.properties.operation.enum, [
+    "text_to_image",
+    "image_to_image",
+    "background_remove",
+    "upscale",
+  ]);
+  // Second call, same process, must have retried rather than served the remembered miss.
+  assert.deepEqual(
+    second.inputSchema.properties.operation.enum,
+    ["text_to_image", "colorize"],
+    "a cached FAILURE turned a five-second outage into a session-long one",
+  );
+});
+
+test("a malformed operations list is reported, not swallowed", async () => {
+  // Previously the warning lived only in the catch, so an empty array or a non-array
+  // produced the same silent fallback as a network failure, with nothing to tell them
+  // apart when someone came to debug it.
+  const api = await listen(fakeApi({ operations: [] }));
+  const { tools, stderr } = await listToolsWithStderr(api.url);
+  api.close();
+
+  const generate = tools.find((t) => t.name === "dreamlayer_generate");
+  assert.deepEqual(generate.inputSchema.properties.operation.enum, [
+    "text_to_image",
+    "image_to_image",
+    "background_remove",
+    "upscale",
+  ]);
+  assert.match(stderr, /no usable operation list/, "a malformed answer must leave a trace");
 });

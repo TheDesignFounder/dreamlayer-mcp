@@ -119,8 +119,39 @@ function fail(error: unknown): ToolResult {
  */
 const COMPILED_OPERATIONS: readonly ManagedOperation[] = KNOWN_OPERATIONS;
 
-/** Cached for the process. `tools/list` can be called repeatedly by a client. */
-let advertisedOperations: string[] | null = null;
+/**
+ * A success is good for the process. A FAILURE is good for a minute.
+ *
+ * The first version cached both the same way, and that turned a five-second problem
+ * into a day-long one. An MCP server is spawned once by its client and lives for the
+ * whole session, hours or days. So a network blip, a VPN that has not finished
+ * connecting, or an API that is briefly unreachable at the moment of the FIRST
+ * tools/list would pin the compiled list for the entire process, with nothing ever
+ * retrying. The fix would stop working precisely when the machine was briefly offline
+ * at startup, which is the likeliest moment for it to be offline.
+ *
+ * Falling back is right. Remembering the fallback forever is not.
+ */
+const NEGATIVE_TTL_MS = (() => {
+  const raw = Number(process.env.DREAMLAYER_OPERATIONS_RETRY_MS);
+  // Overridable so a test can observe the retry without waiting a minute. Clamped, and
+  // an unparseable value falls back rather than becoming NaN, which would compare false
+  // against every Date.now() and retry on literally every call.
+  if (!Number.isFinite(raw) || raw <= 0) return 60_000;
+  return Math.min(Math.max(raw, 250), 10 * 60_000);
+})();
+
+/**
+ * Short, because this runs on a path a model is waiting on.
+ *
+ * getCapabilities uses the ordinary request timeout, which is sized for a request that
+ * does real work. Against a hanging API that would block tools/list for over two
+ * minutes. Capabilities is a small JSON read: if it has not answered in five seconds it
+ * is not going to, and the compiled list is a perfectly good answer in the meantime.
+ */
+const PROBE_TIMEOUT_MS = 5_000;
+
+let cache: { operations: string[]; expiresAt: number } | null = null;
 
 /**
  * The operations the SERVER says it can run, for the tool schema a model reads.
@@ -135,25 +166,42 @@ let advertisedOperations: string[] | null = null;
  * enum, and the real error surfaces on the first call with a request id attached.
  */
 export async function resolveOperations(client: ManagedClient): Promise<string[]> {
-  if (advertisedOperations) return advertisedOperations;
-  try {
-    const caps = await client.getCapabilities();
-    const listed = (caps as { operations?: unknown }).operations;
-    if (Array.isArray(listed) && listed.length > 0 && listed.every((o) => typeof o === "string")) {
-      advertisedOperations = listed as string[];
-      return advertisedOperations;
-    }
-  } catch {
+  if (cache && Date.now() < cache.expiresAt) return cache.operations;
+
+  const fallBack = (reason: string): string[] => {
     // stderr only; stdout carries JSON-RPC and nothing else.
-    process.stderr.write("dreamlayer-mcp: could not read /v1/capabilities, using built-in list\n");
+    process.stderr.write(`dreamlayer-mcp: ${reason}, using built-in operation list\n`);
+    cache = { operations: [...COMPILED_OPERATIONS], expiresAt: Date.now() + NEGATIVE_TTL_MS };
+    return cache.operations;
+  };
+
+  let caps: unknown;
+  try {
+    caps = await Promise.race([
+      client.getCapabilities(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("capabilities probe timed out")), PROBE_TIMEOUT_MS).unref?.(),
+      ),
+    ]);
+  } catch (error) {
+    return fallBack(error instanceof Error ? error.message : "could not read /v1/capabilities");
   }
-  advertisedOperations = [...COMPILED_OPERATIONS];
-  return advertisedOperations;
+
+  const listed = (caps as { operations?: unknown }).operations;
+  // A malformed answer is reported, not swallowed. The first version only warned inside
+  // the catch, so an empty array or a non-array produced the same silent fallback as a
+  // network failure with nothing to distinguish them.
+  if (!Array.isArray(listed) || listed.length === 0 || listed.some((o) => typeof o !== "string")) {
+    return fallBack("/v1/capabilities returned no usable operation list");
+  }
+
+  cache = { operations: listed as string[], expiresAt: Number.POSITIVE_INFINITY };
+  return cache.operations;
 }
 
 /** Test seam: forget what the server said. */
 export function resetOperationCache(): void {
-  advertisedOperations = null;
+  cache = null;
 }
 
 /** Exactly the shape `tools/list` returns; deliberately looser than TOOL_DEFINITIONS,
@@ -222,9 +270,14 @@ export const TOOL_DEFINITIONS = [
           description: "From dreamlayer_upload_image. Required for every operation except text_to_image.",
         },
         aspect_ratio: { type: "string", description: "One of 1:1, 16:9, 9:16, 4:3, 3:4." },
-        // Requires the gateway build that added `operation` to ExecuteRequest. An older
-        // deployment 422s the whole request, so this package must not be published
-        // before that build is live. See ManagedOperation in client.ts.
+        // This enum is the COMPILED default. tools/list replaces it with whatever
+        // /v1/capabilities advertises, so a model never sees an operation this server
+        // will not run. See resolveOperations.
+        //
+        // (The old note here said the package must not be published until the gateway
+        // build carrying `operation` was live. That shipped in prodbeta176 and the
+        // package is published; a stale publish-blocker is exactly the comment that
+        // stops someone six months from now.)
         operation: {
           type: "string",
           enum: [...COMPILED_OPERATIONS],
