@@ -40,7 +40,12 @@ function fakeApi(behaviour) {
           JSON.stringify({
             api_version: "1",
             key_mode: "live",
-            operations: ["text_to_image", "image_to_image", "background_remove", "upscale"],
+            operations: behaviour.operations ?? [
+              "text_to_image",
+              "image_to_image",
+              "background_remove",
+              "upscale",
+            ],
           }),
         );
         return;
@@ -154,6 +159,48 @@ function callTool(apiUrl, name, args, extraEnv = {}) {
       resolve({ reply, payload: JSON.parse(reply.result.content[0].text) });
     }, 2200);
   });
+}
+
+
+/** Spawn the server and complete one tools/list round trip. */
+function listTools(apiUrl) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [ENTRY], {
+      env: { ...process.env, DREAMLAYER_API_KEY: "dlr_live_test_key", DREAMLAYER_API_URL: apiUrl },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    setTimeout(() => send({ jsonrpc: "2.0", id: 2, method: "tools/list" }), 300);
+    setTimeout(() => {
+      child.kill();
+      const reply = stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .filter(Boolean)
+        .find((m) => m.id === 2);
+      if (!reply) { reject(new Error(`no tools/list reply. stdout: ${stdout}`)); return; }
+      resolve(reply.result.tools);
+    }, 2600);
+  });
+}
+
+/** A port nothing is listening on: bind, read it, close. */
+async function freePort() {
+  const s = createServer();
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  const { port } = s.address();
+  await new Promise((r) => s.close(r));
+  return port;
 }
 
 test("dreamlayer_generate sends only fields the API accepts, and names the operation", async () => {
@@ -307,4 +354,46 @@ test("a dead stream reports the execution id instead of a bare abort", async () 
   );
   assert.match(payload.error.guidance, /idempotency_key/, "must warn against paying twice");
   assert.match(payload.error.guidance, /dreamlayer_status/, "must name the recovery tool");
+});
+
+test("tools/list advertises what the SERVER runs, not what this build was compiled with", async () => {
+  // The failure this prevents, from production on 2026-08-21: this package advertised
+  // four operations while the gateway accepted two. Every call to the missing pair
+  // failed validation, and a model cannot diagnose that — an advertised-then-rejected
+  // operation looks exactly like its own mistake, so it retries and rephrases against
+  // something that can never work.
+  //
+  // The fake server here deliberately advertises a SUBSET plus a name this build has
+  // never heard of, so a client echoing its own compiled list cannot pass.
+  const api = await listen(
+    fakeApi({ operations: ["text_to_image", "colorize"] }),
+  );
+
+  const tools = await listTools(api.url);
+  api.close();
+
+  const generate = tools.find((t) => t.name === "dreamlayer_generate");
+  assert.ok(generate, "dreamlayer_generate disappeared");
+  assert.deepEqual(
+    generate.inputSchema.properties.operation.enum,
+    ["text_to_image", "colorize"],
+    "the enum must come from /v1/capabilities, not from the compiled-in list",
+  );
+});
+
+test("a server that cannot be reached still lists tools, using the built-in list", async () => {
+  // A model with NO tools has less to work with than one holding a slightly stale enum,
+  // and the real error surfaces on the first call with a request id attached. So the
+  // fallback is deliberate rather than an oversight.
+  const dead = `http://127.0.0.1:${await freePort()}`;
+  const tools = await listTools(dead);
+
+  const generate = tools.find((t) => t.name === "dreamlayer_generate");
+  assert.ok(generate, "an unreachable server must not produce an empty tool list");
+  assert.deepEqual(generate.inputSchema.properties.operation.enum, [
+    "text_to_image",
+    "image_to_image",
+    "background_remove",
+    "upscale",
+  ]);
 });

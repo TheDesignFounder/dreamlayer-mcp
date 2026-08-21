@@ -17,7 +17,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { ManagedClient } from "./client.js";
-import { TOOL_DEFINITIONS, callTool } from "./tools.js";
+import { callTool, toolDefinitionsFor } from "./tools.js";
 
 const NAME = "dreamlayer";
 const VERSION = "0.1.0";
@@ -51,12 +51,14 @@ async function main(): Promise<void> {
     { capabilities: { tools: {} } },
   );
 
+  // Asks the SERVER which operations it runs, rather than advertising a list compiled
+  // into this version. On 2026-08-21 those disagreed in production: this package
+  // offered four operations while the gateway accepted two, and a model cannot tell an
+  // advertised-then-rejected operation apart from its own mistake. `/v1/capabilities`
+  // is free and spends nothing, and a failure falls back to the built-in list rather
+  // than serving no tools at all.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOL_DEFINITIONS.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    })),
+    tools: await toolDefinitionsFor(client),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) =>

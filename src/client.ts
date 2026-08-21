@@ -44,11 +44,23 @@ export type ManagedEvent = {
  * anyway. Confirmed against the deployment, not the source: the live /openapi.json
  * advertises exactly these four in both ExecuteRequest and ImageJobCreate.
  */
-export type ManagedOperation =
-  | "text_to_image"
-  | "image_to_image"
-  | "background_remove"
-  | "upscale";
+export const KNOWN_OPERATIONS = [
+  "text_to_image",
+  "image_to_image",
+  "background_remove",
+  "upscale",
+] as const;
+
+/**
+ * Derived from the array above, not written twice.
+ *
+ * The first version of this declared the union by hand and pinned an array to it with
+ * `satisfies`. That catches a WRONG entry and not a MISSING one, because a shorter array
+ * still satisfies a wider union, so the exact drift this file exists to detect could
+ * slip through the check meant to prevent it. Deriving the type makes the array the
+ * single definition and the question unaskable.
+ */
+export type ManagedOperation = (typeof KNOWN_OPERATIONS)[number];
 
 export type ManagedExecuteInput = {
   prompt?: string;

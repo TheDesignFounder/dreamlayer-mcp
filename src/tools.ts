@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { KNOWN_OPERATIONS } from "./client.js";
 import type { ManagedClient, ManagedEvent, ManagedOperation } from "./client.js";
 import {
   ApiError,
@@ -105,12 +106,81 @@ function fail(error: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify({ error: { message } }) }], isError: true };
 }
 
-const OPERATIONS: ManagedOperation[] = [
-  "text_to_image",
-  "image_to_image",
-  "background_remove",
-  "upscale",
-];
+/**
+ * What this BUILD knows how to name. A floor, not the truth.
+ *
+ * The truth is whatever the server advertises, and the two came apart in production on
+ * 2026-08-21: this package shipped four operations while the gateway accepted two, so
+ * every call to the missing pair failed validation. A model cannot diagnose that. An
+ * operation that is advertised and then rejected looks exactly like a client bug, so it
+ * retries, rephrases, and burns turns on something that can never work.
+ *
+ * Used only as the fallback below.
+ */
+const COMPILED_OPERATIONS: readonly ManagedOperation[] = KNOWN_OPERATIONS;
+
+/** Cached for the process. `tools/list` can be called repeatedly by a client. */
+let advertisedOperations: string[] | null = null;
+
+/**
+ * The operations the SERVER says it can run, for the tool schema a model reads.
+ *
+ * `/v1/capabilities` is free, spends no credits, and touches no provider, so asking is
+ * cheap. Asking is also the only way to be correct: a compiled-in list is a claim about
+ * a deployment that may have moved since this version was published.
+ *
+ * Falls back to the compiled list on ANY failure, deliberately. A server that cannot
+ * reach the API, or holds a revoked key, must still start and list its tools: a model
+ * that gets no tools at all has less to work with than one holding a slightly stale
+ * enum, and the real error surfaces on the first call with a request id attached.
+ */
+export async function resolveOperations(client: ManagedClient): Promise<string[]> {
+  if (advertisedOperations) return advertisedOperations;
+  try {
+    const caps = await client.getCapabilities();
+    const listed = (caps as { operations?: unknown }).operations;
+    if (Array.isArray(listed) && listed.length > 0 && listed.every((o) => typeof o === "string")) {
+      advertisedOperations = listed as string[];
+      return advertisedOperations;
+    }
+  } catch {
+    // stderr only; stdout carries JSON-RPC and nothing else.
+    process.stderr.write("dreamlayer-mcp: could not read /v1/capabilities, using built-in list\n");
+  }
+  advertisedOperations = [...COMPILED_OPERATIONS];
+  return advertisedOperations;
+}
+
+/** Test seam: forget what the server said. */
+export function resetOperationCache(): void {
+  advertisedOperations = null;
+}
+
+/** Exactly the shape `tools/list` returns; deliberately looser than TOOL_DEFINITIONS,
+ *  whose readonly tuple type cannot survive a map(). */
+export type ListedTool = { name: string; description: string; inputSchema: unknown };
+
+/** The tool list with `operation` narrowed to what this server actually accepts. */
+export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedTool[]> {
+  const operations = await resolveOperations(client);
+  return TOOL_DEFINITIONS.map((tool): ListedTool => {
+    const property = (tool.inputSchema.properties as Record<string, unknown>).operation as
+      | { enum?: unknown }
+      | undefined;
+    if (!property) return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema };
+    return {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: {
+          ...tool.inputSchema.properties,
+          operation: { ...property, enum: operations },
+        },
+      },
+    };
+  });
+}
 
 export const TOOL_DEFINITIONS = [
   {
@@ -157,7 +227,7 @@ export const TOOL_DEFINITIONS = [
         // before that build is live. See ManagedOperation in client.ts.
         operation: {
           type: "string",
-          enum: OPERATIONS,
+          enum: [...COMPILED_OPERATIONS],
           description:
             "Name it to run deterministically and skip interpretation, so the request cannot come back as a question. Omit it to let DreamLayer read the prompt.",
         },
