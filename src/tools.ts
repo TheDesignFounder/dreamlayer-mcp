@@ -48,7 +48,14 @@ function fail(error: unknown): ToolResult {
         {
           type: "text",
           text: JSON.stringify(
-            { error: { status: error.status, detail: error.detail, guidance } },
+            {
+              error: {
+                status: error.status,
+                detail: error.detail,
+                request_id: error.requestId,
+                guidance,
+              },
+            },
             null,
             2,
           ),
@@ -108,6 +115,9 @@ export const TOOL_DEFINITIONS = [
           description: "From dreamlayer_upload_image. Required for every operation except text_to_image.",
         },
         aspect_ratio: { type: "string", description: "One of 1:1, 16:9, 9:16, 4:3, 3:4." },
+        // Requires the gateway build that added `operation` to ExecuteRequest. An older
+        // deployment 422s the whole request, so this package must not be published
+        // before that build is live. See ManagedOperation in client.ts.
         operation: {
           type: "string",
           enum: OPERATIONS,

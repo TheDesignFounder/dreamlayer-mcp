@@ -1,6 +1,11 @@
 /**
  * Hosted client for the DreamLayer Agent API.
  *
+ * Deliberately a COPY of the same file in dreamlayer-cli rather than a shared package.
+ * The alternative makes every capability three releases in strict order (client, then
+ * CLI, then MCP) instead of one release per repo. For a client over eight endpoints
+ * that trade is not worth the friction.
+ *
  * Lifted from the DreamLayer runtime's TypeScript client, which is retired. The
  * validation, error sanitisation, and origin hardening are kept verbatim because they
  * were already correct; what changed is that the SSE reader is now wired to the hosted
@@ -23,7 +28,17 @@ export type ManagedEvent = {
   data: Record<string, unknown>;
 };
 
-/** Every operation the Agent API can execute. Omit it and DreamLayer reads the prompt. */
+/**
+ * Every operation the Agent API can execute.
+ *
+ * REQUIRES the gateway build that added `operation` to ExecuteRequest. Against an older
+ * deployment this field is rejected with 422 extra_forbidden, because the request model
+ * is closed. That is a sequencing constraint, not a reason to drop it: naming the
+ * operation is what stops a cutout or an upscale being re-read from the prompt and
+ * coming back as a clarifying question instead of an image.
+ *
+ * Do not publish this package before that gateway build is deployed.
+ */
 export type ManagedOperation =
   | "text_to_image"
   | "image_to_image"
@@ -36,6 +51,7 @@ export type ManagedExecuteInput = {
   conversation_id?: string;
   input_asset_id?: string;
   aspect_ratio?: string;
+  /** Requires the gateway build that added it. See ManagedOperation. */
   operation?: ManagedOperation;
 };
 
@@ -58,8 +74,14 @@ export class ApiError extends Error {
     public readonly status: number,
     surface = "DreamLayer Agent API",
     public readonly detail: string | null = null,
+    /** Server-assigned id for this failure. The only handle support can search on. */
+    public readonly requestId: string | null = null,
   ) {
-    super(detail ?? `${surface} request failed (${status})`);
+    super(
+      detail
+        ? `${detail}${requestId ? ` (request ${requestId})` : ""}`
+        : `${surface} request failed (${status})`,
+    );
     this.name = "ApiError";
   }
 
@@ -88,17 +110,28 @@ function sanitizedErrorDetail(value: unknown): string | null {
 
 async function apiError(response: Response, surface = "DreamLayer Agent API"): Promise<ApiError> {
   let detail: string | null = null;
+  let requestId: string | null = null;
   try {
     const length = Number(response.headers.get("content-length") ?? "0");
     if (!Number.isFinite(length) || length < 0 || length > ERROR_BODY_LIMIT) {
       return new ApiError(response.status, surface);
     }
     const parsed = JSON.parse(await response.text()) as unknown;
-    if (isRecord(parsed)) detail = sanitizedErrorDetail(parsed.detail);
+    if (isRecord(parsed)) {
+      // Two shapes in the wild. The gateway returns
+      // {"error":{"code","message","category","request_id"}}; older surfaces and
+      // FastAPI's own handlers return {"detail": "..."}. Reading only the latter is
+      // why every failure used to print a bare status code and nothing else.
+      detail = sanitizedErrorDetail(parsed.detail);
+      if (isRecord(parsed.error)) {
+        detail = detail ?? sanitizedErrorDetail(parsed.error.message);
+        requestId = sanitizedErrorDetail(parsed.error.request_id);
+      }
+    }
   } catch {
     detail = null;
   }
-  return new ApiError(response.status, surface, detail);
+  return new ApiError(response.status, surface, detail, requestId);
 }
 
 const MANAGED_EVENT_NAMES = new Set<ManagedEventName>([
@@ -225,6 +258,24 @@ async function* readEventStream(
   }
 }
 
+/**
+ * Hosts this client will send a bearer key to.
+ *
+ * In August a build moved the endpoint default from api.dreamlayer.io to the bare
+ * marketing apex, and every request carried Authorization there for two days. The
+ * origin passed every cleanliness check below, because those check the SHAPE of a URL
+ * and never which host it names. An allowlist is the only thing that catches a host
+ * swap, which is why the gateway now has a pinned-origin test and why this mirrors it.
+ *
+ * DREAMLAYER_API_URL still works for a genuinely different deployment: set
+ * DREAMLAYER_ALLOW_ANY_HOST=1 alongside it and accept that you are vouching for the host.
+ */
+const ALLOWED_HOSTS = new Set(["api.dreamlayer.io"]);
+
+function isLoopback(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
+}
+
 function managedOrigin(value: string): string {
   if (!value || value.endsWith("?") || value.endsWith("#")) {
     throw new Error("Managed endpoint must be a clean HTTPS origin");
@@ -239,12 +290,19 @@ function managedOrigin(value: string): string {
   ) {
     throw new Error("Managed endpoint must be a clean HTTPS origin");
   }
-  const loopback =
-    parsed.hostname === "127.0.0.1" ||
-    parsed.hostname === "localhost" ||
-    parsed.hostname === "[::1]";
+  const loopback = isLoopback(parsed.hostname);
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
     throw new Error("Managed endpoint must use HTTPS, except for exact loopback development");
+  }
+  const permitted =
+    ALLOWED_HOSTS.has(parsed.hostname) ||
+    loopback ||
+    (process.env.DREAMLAYER_ALLOW_ANY_HOST ?? "").trim() === "1";
+  if (!permitted) {
+    throw new Error(
+      `Refusing to send an API key to ${parsed.hostname}. ` +
+        `Expected api.dreamlayer.io. Set DREAMLAYER_ALLOW_ANY_HOST=1 to override.`,
+    );
   }
   return parsed.origin;
 }
@@ -340,8 +398,20 @@ export class ManagedClient {
    * receives the redirect instead of the image.
    */
   async download(url: string): Promise<Uint8Array> {
+    // Only attach the key when the URL is OUR origin. download_url arrives in the event
+    // stream and is validated as text, so a wrong or hostile value would otherwise walk
+    // off with a live credential on the very first request. Node strips Authorization
+    // across a cross-origin redirect, so the hop to signed storage stays safe either way,
+    // and storage URLs are pre-signed and need no header from us.
+    const sameOrigin = (() => {
+      try {
+        return new URL(url).origin === this.baseUrl;
+      } catch {
+        return false;
+      }
+    })();
     const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${this.apiKey}` },
+      headers: sameOrigin ? { Authorization: `Bearer ${this.apiKey}` } : {},
       redirect: "follow",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
