@@ -11,7 +11,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ManagedClient, ManagedEvent, ManagedOperation } from "./client.js";
-import { ApiError } from "./client.js";
+import {
+  ApiError,
+  StreamIdleError,
+} from "./client.js";
 
 export type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -54,6 +57,40 @@ function fail(error: unknown): ToolResult {
                 detail: error.detail,
                 request_id: error.requestId,
                 guidance,
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+      isError: true,
+    };
+  }
+  // A stream that went silent is the failure most likely to have ALREADY been charged
+  // for: the server may have finished the job we stopped listening to. Falling through
+  // to the generic branch below gave a model a bare abort message, no execution id, and
+  // no basis for deciding whether a retry would pay twice.
+  if (error instanceof StreamIdleError) {
+    const executionId =
+      error !== null && typeof error === "object"
+        ? ((error as { partialOutcome?: { execution_id?: string | null } }).partialOutcome
+            ?.execution_id ?? null)
+        : null;
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              error: {
+                detail: error.message,
+                execution_id: executionId,
+                guidance: executionId
+                  ? "The job may still be running. Poll dreamlayer_status with this " +
+                    "execution_id before retrying, or retry with the SAME idempotency_key " +
+                    "so it cannot be charged twice."
+                  : "Retry with the same idempotency_key so it cannot be charged twice.",
               },
             },
             null,
@@ -183,12 +220,26 @@ const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 async function collect(stream: AsyncGenerator<ManagedEvent>): Promise<ToolResult> {
   const events: ManagedEvent[] = [];
   let truncated = false;
-  for await (const event of stream) {
-    if (events.length >= MAX_EVENTS_RETURNED) {
-      truncated = true;
-      break;
+  try {
+    for await (const event of stream) {
+      if (events.length >= MAX_EVENTS_RETURNED) {
+        truncated = true;
+        break;
+      }
+      events.push(event);
     }
-    events.push(event);
+  } catch (error) {
+    // `started` arrives within seconds carrying the execution id. Letting the error
+    // propagate bare discarded it, so a model whose stream died had no way to find a
+    // job that may already have been charged for. Attached rather than wrapped, so the
+    // `instanceof ApiError` branch in fail() still works.
+    const begun = events.find((event) => event.event === "started");
+    if (error !== null && typeof error === "object") {
+      (error as { partialOutcome?: { execution_id: unknown } }).partialOutcome = {
+        execution_id: begun?.data.execution_id ?? null,
+      };
+    }
+    throw error;
   }
   const started = events.find((event) => event.event === "started");
   const done = events.find((event) => event.event === "done");

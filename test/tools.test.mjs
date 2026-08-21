@@ -101,10 +101,15 @@ async function listen(handler) {
 }
 
 /** Spawn the server, initialize, call one tool, return its parsed result. */
-function callTool(apiUrl, name, args) {
+function callTool(apiUrl, name, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [ENTRY], {
-      env: { ...process.env, DREAMLAYER_API_KEY: "dlr_live_test_key", DREAMLAYER_API_URL: apiUrl },
+      env: {
+        ...process.env,
+        DREAMLAYER_API_KEY: "dlr_live_test_key",
+        DREAMLAYER_API_URL: apiUrl,
+        ...extraEnv,
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -266,4 +271,40 @@ test("dreamlayer_capabilities spends nothing and reports the contract", async ()
 
   assert.equal(payload.api_version, "1");
   assert.equal(touchedExecute, false, "capabilities must never reach the paid path");
+});
+
+test("a dead stream reports the execution id instead of a bare abort", async () => {
+  // Same defect as the CLI's, same root cause: a TOTAL-duration timeout on a stream.
+  // A 2048px upscale takes ~150s, the cap was 130s, so the operation failed every time
+  // after the server had done the work. For a model the consequence is worse than a bad
+  // exit code: it gets an abort message with no execution id and no way to reason about
+  // whether retrying pays twice.
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(
+      `id: 1\nevent: started\ndata: ${JSON.stringify({
+        execution_id: "22222222-2222-4222-8222-222222222222",
+        conversation_id: "33333333-3333-4333-8333-333333333333",
+      })}\n\n`,
+    );
+    // then silence, with no end()
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  const { reply, payload } = await callTool(
+    `http://127.0.0.1:${server.address().port}`,
+    "dreamlayer_generate",
+    { prompt: "a cat", operation: "text_to_image" },
+    { DREAMLAYER_STREAM_IDLE_MS: "400" },
+  );
+  server.close();
+
+  assert.equal(reply.result.isError, true, "a dead stream is a failure, not a success");
+  assert.equal(
+    payload.error.execution_id,
+    "22222222-2222-4222-8222-222222222222",
+    "the id arrived in `started` and must survive the abort",
+  );
+  assert.match(payload.error.guidance, /idempotency_key/, "must warn against paying twice");
+  assert.match(payload.error.guidance, /dreamlayer_status/, "must name the recovery tool");
 });

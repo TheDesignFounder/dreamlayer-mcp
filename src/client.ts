@@ -96,9 +96,61 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A stream that went silent, as distinct from a slow one.
+ *
+ * Thrown as a real error type because the CLI's exit codes and its retry advice are
+ * driven off the error, and a bare DOMException from AbortSignal fell through to the
+ * generic handler: exit 1 with no guidance, on the one failure most likely to have been
+ * charged for. See ManagedApiError.retryable.
+ */
+export class StreamIdleError extends Error {
+  readonly idleMs = STREAM_IDLE_TIMEOUT_MS;
+  constructor() {
+    super(
+      `the stream sent nothing for ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s, so the ` +
+        "connection is treated as dead. The job may still be running on the server.",
+    );
+    this.name = "StreamIdleError";
+  }
+}
+
 const ERROR_BODY_LIMIT = 16 * 1024;
 const ERROR_DETAIL_LIMIT = 300;
+/**
+ * A plain request: send, get a body back. Bounded work, so a total cap is right.
+ */
 const REQUEST_TIMEOUT_MS = 130_000;
+
+/**
+ * A STREAM is different, and conflating the two shipped a broken `upscale`.
+ *
+ * AbortSignal.timeout() caps TOTAL duration. An upscale of a 2048px image takes about
+ * 150s server-side, so a 130s total cap aborted every single one: a command that failed
+ * 100% of the time on a normal input, while the server had done the work and charged
+ * for it.
+ *
+ * Raising the number would fix upscale and break again on the next slower operation.
+ * The right question is not "how long may a job take" (unknowable, and it is the
+ * server's business) but "how long may we hear NOTHING before the connection is dead".
+ * The server sends `: keepalive` comments precisely so a client can tell those apart;
+ * a total-duration timeout throws that information away.
+ *
+ * So: idle timeout, reset on every byte received.
+ */
+const STREAM_IDLE_DEFAULT_MS = 90_000;
+
+/**
+ * Overridable, within bounds. Two honest reasons rather than one: a test cannot wait
+ * 90 seconds to prove a timeout fires, and a user on a genuinely bad link may need
+ * longer. Clamped so a typo cannot disable the guard entirely or set it to zero, and
+ * an unparseable value falls back rather than becoming NaN, which would abort instantly.
+ */
+const STREAM_IDLE_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.DREAMLAYER_STREAM_IDLE_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return STREAM_IDLE_DEFAULT_MS;
+  return Math.min(Math.max(raw, 100), 15 * 60_000);
+})();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -231,12 +283,16 @@ export function managedEvent(event: string, id: string | null, value: unknown): 
 /** Parse a server-sent-event body into blocks. Handles multi-line data and comments. */
 async function* readEventStream(
   body: ReadableStream<Uint8Array>,
+  onBytes?: () => void,
 ): AsyncGenerator<{ event: string; id: string | null; data: unknown }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   for (;;) {
     const { value, done } = await reader.read();
+    // Any byte at all, including a `: keepalive` comment that parses to no event,
+    // proves the connection is alive. That is the signal the idle timer needs.
+    if (!done) onBytes?.();
     buffer += decoder.decode(value, { stream: !done });
     let boundary = buffer.indexOf("\n\n");
     while (boundary >= 0) {
@@ -340,7 +396,7 @@ export class ManagedClient {
     input: ManagedExecuteInput,
     options: { idempotencyKey: string },
   ): AsyncGenerator<ManagedEvent> {
-    const response = await this.fetchStream("/v1/execute", {
+    const stream = await this.fetchStream("/v1/execute", {
       method: "POST",
       headers: {
         Accept: "text/event-stream",
@@ -349,18 +405,18 @@ export class ManagedClient {
       },
       body: JSON.stringify(input),
     });
-    yield* this.parse(response);
+    yield* this.parse(stream);
   }
 
   /** Resume a stream after a drop. Pass the last event id you actually processed. */
   async *events(executionId: string, lastEventId?: string): AsyncGenerator<ManagedEvent> {
     const headers: Record<string, string> = { Accept: "text/event-stream" };
     if (lastEventId) headers["Last-Event-ID"] = lastEventId;
-    const response = await this.fetchStream(
+    const stream = await this.fetchStream(
       `/v1/executions/${encodeURIComponent(executionId)}/events`,
       { headers },
     );
-    yield* this.parse(response);
+    yield* this.parse(stream);
   }
 
   async getCapabilities(): Promise<Record<string, unknown>> {
@@ -424,26 +480,67 @@ export class ManagedClient {
     return new Uint8Array(await response.arrayBuffer());
   }
 
-  private async *parse(response: Response): AsyncGenerator<ManagedEvent> {
-    if (!response.body) throw new Error("DreamLayer managed endpoint returned no body");
-    for await (const block of readEventStream(response.body)) {
-      yield managedEvent(block.event, block.id, block.data);
+  private async *parse(
+    stream: { response: Response; keepAlive: () => void; finish: () => void },
+  ): AsyncGenerator<ManagedEvent> {
+    const { response, keepAlive, finish } = stream;
+    if (!response.body) {
+      finish();
+      throw new Error("DreamLayer managed endpoint returned no body");
+    }
+    try {
+      for await (const block of readEventStream(response.body, keepAlive)) {
+        yield managedEvent(block.event, block.id, block.data);
+      }
+    } finally {
+      // Also runs when the consumer breaks out of the loop early, which the CLI does
+      // as soon as it sees a terminal event. Without this the timer keeps the process
+      // alive for another idle period.
+      finish();
     }
   }
 
-  private async fetchStream(path: string, init: RequestInit): Promise<Response> {
+  private async fetchStream(
+    path: string,
+    init: RequestInit,
+  ): Promise<{ response: Response; keepAlive: () => void; finish: () => void }> {
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${this.apiKey}`);
     headers.set("DreamLayer-Version", "1");
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      ...init,
-      headers,
-      redirect: "manual",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!response.ok) throw await apiError(response);
-    requireEventStream(response);
-    return response;
+
+    // One controller for the whole stream, armed on an IDLE clock that every received
+    // byte pushes forward. The signal has to outlive the fetch() call: aborting only
+    // the handshake would leave a stalled body hanging forever.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const keepAlive = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(new StreamIdleError()), STREAM_IDLE_TIMEOUT_MS);
+      timer.unref?.();
+    };
+    const finish = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    };
+
+    keepAlive();
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        ...init,
+        headers,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        finish();
+        throw await apiError(response);
+      }
+      requireEventStream(response);
+      return { response, keepAlive, finish };
+    } catch (error) {
+      finish();
+      throw error;
+    }
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
