@@ -4,19 +4,46 @@
   "description": "Image generation and editing tools for MCP-compatible AI clients, backed by the DreamLayer Agent API.",
   "license": "MIT",
   "type": "module",
-  "bin": { "dreamlayer-mcp": "./dist/index.js" },
+  "bin": {
+    "dreamlayer-mcp": "./dist/index.js"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md", "LICENSE", "NOTICE"],
-  "engines": { "node": ">=22.12" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
     "test": "pnpm build && node --test test/*.test.mjs",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "pnpm test"
   },
-  "dependencies": { "@modelcontextprotocol/sdk": "^1.0.0" },
-  "devDependencies": { "typescript": "5.9.2", "@types/node": "^22.10.0" },
-  "keywords": ["mcp", "model-context-protocol", "image-generation", "dreamlayer", "ai"],
-  "repository": { "type": "git", "url": "git+https://github.com/TheDesignFounder/dreamlayer-mcp.git" },
-  "homepage": "https://docs.dreamlayer.io/mcp"
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.2",
+    "@types/node": "^22.10.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "image-generation",
+    "dreamlayer",
+    "ai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TheDesignFounder/dreamlayer-mcp.git"
+  },
+  "homepage": "https://docs.dreamlayer.io/mcp",
+  "publishConfig": {
+    "access": "public"
+  }
 }
