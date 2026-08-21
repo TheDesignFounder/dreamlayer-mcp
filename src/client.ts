@@ -37,7 +37,12 @@ export type ManagedEvent = {
  * operation is what stops a cutout or an upscale being re-read from the prompt and
  * coming back as a clarifying question instead of an image.
  *
- * Do not publish this package before that gateway build is deployed.
+ * SATISFIED 2026-08-21. prodbeta176 carries the field in the gateway AND the dispatch
+ * in the workflow engine, which had been split across two releases: the gateway
+ * accepted `operation` from prodbeta174 while the half that acts on it was still on
+ * prodbeta172, so naming an operation returned 200 and was then inferred from prose
+ * anyway. Confirmed against the deployment, not the source: the live /openapi.json
+ * advertises exactly these four in both ExecuteRequest and ImageJobCreate.
  */
 export type ManagedOperation =
   | "text_to_image"
