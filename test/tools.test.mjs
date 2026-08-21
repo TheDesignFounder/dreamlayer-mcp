@@ -197,10 +197,18 @@ test("dreamlayer_generate sends only fields the API accepts, and names the opera
   assert.equal(payload.asset.asset_id, "44444444-4444-4444-8444-444444444444");
 });
 
-test("every advertised operation is one the request may actually carry", async () => {
-  // The schema advertises four. If the wire rejected any of them the model would be
-  // told to use something that always fails.
-  for (const operation of ["text_to_image", "image_to_image", "background_remove", "upscale"]) {
+test("every operation the SERVER advertises is one the request may actually carry", async () => {
+  // Deliberately driven from the capabilities response rather than from a list written
+  // here. Restating the client's own enum and asserting it matches would check the
+  // client against itself, which is how a client shipped two operations the server did
+  // not implement and stayed green. A real client trusts /v1/capabilities; so does this.
+  const probe = await listen(fakeApi({}));
+  const { payload } = await callTool(probe.url, "dreamlayer_capabilities", {});
+  probe.close();
+  const advertised = payload.operations;
+  assert.ok(Array.isArray(advertised) && advertised.length > 0, "capabilities listed none");
+
+  for (const operation of advertised) {
     const api = await listen(
       fakeApi({
         events: [
