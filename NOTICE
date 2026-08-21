@@ -1,0 +1,9 @@
+DreamLayer Image Agent MCP Server
+Copyright (c) 2026 DreamLayer AI
+
+This package is a thin client. It sends requests to the DreamLayer Agent API at
+https://api.dreamlayer.io and returns what that service replies. The service itself
+is proprietary and is not included here.
+
+Nothing in this package inspects, stores, or transmits your prompts or images anywhere
+other than the DreamLayer Agent API, using the key you supply in DREAMLAYER_API_KEY.
