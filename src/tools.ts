@@ -37,10 +37,12 @@ function ok(value: unknown): ToolResult {
  * The Python server returned `str(error)`, which leaked httpx internals into the
  * transcript and told the model nothing about whether retrying was sensible.
  */
-function fail(error: unknown): ToolResult {
+function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResult {
   if (error instanceof ApiError) {
     const guidance =
-      error.status === 402
+      options.uploadOnly
+        ? "No image job was started. Correct the error, then retry the upload."
+        : error.status === 402
         ? "Out of credits. Buy a pack at https://platform.dreamlayer.io/console/billing."
         : error.status === 401
           ? "The API key is missing, invalid, or revoked."
@@ -113,7 +115,7 @@ function fail(error: unknown): ToolResult {
             {
               error: {
                 detail: error.message,
-                guidance: "Temporary. Retry with the same idempotency_key.",
+                guidance: "No image job was started. Retry the upload.",
               },
             },
             null,
@@ -462,6 +464,6 @@ export async function callTool(
         throw new Error(`unknown tool ${name}`);
     }
   } catch (error) {
-    return fail(error);
+    return fail(error, { uploadOnly: name === "dreamlayer_upload_image" });
   }
 }

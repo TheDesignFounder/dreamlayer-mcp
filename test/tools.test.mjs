@@ -384,7 +384,8 @@ test("dreamlayer_upload_image refuses an off-origin proxied upload URL", async (
   const { payload } = await callTool(api.url, "dreamlayer_upload_image", { path: source });
   api.close();
   assert.match(payload.error.detail, /off-origin upload URL/);
-  assert.match(payload.error.guidance, /same idempotency_key/);
+  assert.match(payload.error.guidance, /No image job was started/);
+  assert.doesNotMatch(payload.error.guidance, /idempotency/i);
 });
 
 test("a genuinely stalled staged upload is reported as retryable", async () => {
@@ -400,7 +401,8 @@ test("a genuinely stalled staged upload is reported as retryable", async () => {
   );
   api.close();
   assert.match(payload.error.detail, /staged upload stopped/);
-  assert.match(payload.error.guidance, /same idempotency_key/);
+  assert.match(payload.error.guidance, /No image job was started/);
+  assert.doesNotMatch(payload.error.guidance, /idempotency/i);
 });
 
 test("every operation the SERVER advertises is one the request may actually carry", async () => {
