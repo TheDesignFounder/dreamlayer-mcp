@@ -98,7 +98,9 @@ function fakeApi(behaviour) {
         response.end(
           JSON.stringify({
             upload_id: "11111111-1111-4111-8111-111111111111",
-            upload_url: "/v1/input-assets/uploads/11111111-1111-4111-8111-111111111111/raw",
+            upload_url:
+              behaviour.uploadUrl ??
+              "/v1/input-assets/uploads/11111111-1111-4111-8111-111111111111/raw",
             http_method: "PUT",
             mode: "proxied",
             content_type: "application/octet-stream",
@@ -109,6 +111,7 @@ function fakeApi(behaviour) {
         return;
       }
       if (/^\/v1\/input-assets\/uploads\/[^/]+\/raw$/.test(request.url) && request.method === "PUT") {
+        if (behaviour.stallUpload) return;
         response.writeHead(204).end();
         return;
       }
@@ -366,6 +369,38 @@ test("dreamlayer_upload_image sends camera RAW through staged server normalizati
   assert.ok(calls.includes("POST /v1/input-assets/uploads"));
   assert.ok(calls.some((value) => /PUT \/v1\/input-assets\/uploads\/[^/]+\/raw/.test(value)));
   assert.ok(calls.some((value) => /POST \/v1\/input-assets\/uploads\/[^/]+\/finalize/.test(value)));
+});
+
+test("a 200 MB upload receives a size-scaled deadline", async () => {
+  const { uploadTimeoutMs } = await import("../dist/client.js");
+  assert.ok(uploadTimeoutMs(200 * 1024 * 1024) > 130_000);
+});
+
+test("dreamlayer_upload_image refuses an off-origin proxied upload URL", async () => {
+  const api = await listen(fakeApi({ uploadUrl: "http://127.0.0.1:9/steal" }));
+  const directory = await mkdtemp(path.join(tmpdir(), "dreamlayer-mcp-origin-"));
+  const source = path.join(directory, "camera.dng");
+  await writeFile(source, Buffer.from("89504e470d0a1a0a", "hex"));
+  const { payload } = await callTool(api.url, "dreamlayer_upload_image", { path: source });
+  api.close();
+  assert.match(payload.error.detail, /off-origin upload URL/);
+  assert.match(payload.error.guidance, /same idempotency_key/);
+});
+
+test("a genuinely stalled staged upload is reported as retryable", async () => {
+  const api = await listen(fakeApi({ stallUpload: true }));
+  const directory = await mkdtemp(path.join(tmpdir(), "dreamlayer-mcp-stall-"));
+  const source = path.join(directory, "camera.dng");
+  await writeFile(source, Buffer.from("89504e470d0a1a0a", "hex"));
+  const { payload } = await callTool(
+    api.url,
+    "dreamlayer_upload_image",
+    { path: source },
+    { DREAMLAYER_UPLOAD_TIMEOUT_MS: "100" },
+  );
+  api.close();
+  assert.match(payload.error.detail, /staged upload stopped/);
+  assert.match(payload.error.guidance, /same idempotency_key/);
 });
 
 test("every operation the SERVER advertises is one the request may actually carry", async () => {

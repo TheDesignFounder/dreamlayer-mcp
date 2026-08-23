@@ -7,7 +7,8 @@
  * runtime any more.
  */
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { openAsBlob } from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 
 import { KNOWN_OPERATIONS } from "./client.js";
@@ -15,6 +16,7 @@ import type { ManagedClient, ManagedEvent, ManagedOperation } from "./client.js"
 import {
   ApiError,
   StreamIdleError,
+  UploadTimeoutError,
 } from "./client.js";
 
 export type ToolResult = {
@@ -92,6 +94,26 @@ function fail(error: unknown): ToolResult {
                     "execution_id before retrying, or retry with the SAME idempotency_key " +
                     "so it cannot be charged twice."
                   : "Retry with the same idempotency_key so it cannot be charged twice.",
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+      isError: true,
+    };
+  }
+  if (error instanceof UploadTimeoutError) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              error: {
+                detail: error.message,
+                guidance: "Temporary. Retry with the same idempotency_key.",
               },
             },
             null,
@@ -330,11 +352,6 @@ export const TOOL_DEFINITIONS = [
   },
 ] as const;
 
-const IMAGE_EXTENSIONS = new Set([
-  ".png", ".jpg", ".jpeg", ".webp", ".3fr", ".arw", ".cr2", ".cr3", ".dng",
-  ".erf", ".fff", ".iiq", ".kdc", ".mef", ".mos", ".mrw", ".nef", ".nrw",
-  ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f",
-]);
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 /**
@@ -403,20 +420,14 @@ export async function callTool(
         if (!path.isAbsolute(filePath)) {
           throw new Error("path must be absolute");
         }
-        const extension = path.extname(filePath).toLowerCase();
-        if (!IMAGE_EXTENSIONS.has(extension)) {
+        const fileStat = await stat(filePath);
+        if (fileStat.size > MAX_UPLOAD_BYTES) {
           throw new Error(
-            `unsupported image type ${extension || "(none)"}; use PNG, JPEG, WEBP, or camera RAW`,
-          );
-        }
-        const bytes = await readFile(filePath);
-        if (bytes.byteLength > MAX_UPLOAD_BYTES) {
-          throw new Error(
-            `image is ${Math.round(bytes.byteLength / 1024 / 1024)} MB; the limit is 200 MB`,
+            `image is ${Math.round(fileStat.size / 1024 / 1024)} MB; the limit is 200 MB`,
           );
         }
         const asset = await client.uploadInput(
-          new Blob([new Uint8Array(bytes)]),
+          await openAsBlob(filePath),
           path.basename(filePath),
         );
         return ok(asset);

@@ -90,10 +90,11 @@ type ManagedInputUpload = {
 };
 
 const DIRECT_INPUT_BYTES = 20 * 1024 * 1024;
-const RAW_INPUT_SUFFIXES = new Set([
-  ".3fr", ".arw", ".cr2", ".cr3", ".dng", ".erf", ".fff", ".iiq", ".kdc",
-  ".mef", ".mos", ".mrw", ".nef", ".nrw", ".orf", ".pef", ".raf", ".raw",
-  ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f",
+const RASTER_INPUT_SUFFIXES = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+const LEGACY_INPUT_SUFFIXES = new Set([
+  ...RASTER_INPUT_SUFFIXES,
+  ".arw", ".cr2", ".cr3", ".crw", ".dng", ".nef", ".nrw", ".orf", ".pef",
+  ".raf", ".rw2", ".sr2", ".srw",
 ]);
 
 export type ManagedExecution = {
@@ -144,12 +145,32 @@ export class StreamIdleError extends Error {
   }
 }
 
+export class UploadTimeoutError extends Error {
+  constructor() {
+    super("the staged upload stopped before it completed; no image job was started");
+    this.name = "UploadTimeoutError";
+  }
+}
+
 const ERROR_BODY_LIMIT = 16 * 1024;
 const ERROR_DETAIL_LIMIT = 300;
 /**
  * A plain request: send, get a body back. Bounded work, so a total cap is right.
  */
 const REQUEST_TIMEOUT_MS = 130_000;
+const UPLOAD_MIN_BYTES_PER_SECOND = 256 * 1024;
+const UPLOAD_MAX_TIMEOUT_MS = 15 * 60_000;
+
+export function uploadTimeoutMs(bytes: number): number {
+  const override = Number(process.env.DREAMLAYER_UPLOAD_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) {
+    return Math.min(Math.max(override, 100), UPLOAD_MAX_TIMEOUT_MS);
+  }
+  return Math.min(
+    Math.max(REQUEST_TIMEOUT_MS, 60_000 + Math.ceil(bytes / UPLOAD_MIN_BYTES_PER_SECOND) * 1000),
+    UPLOAD_MAX_TIMEOUT_MS,
+  );
+}
 
 /**
  * A STREAM is different, and conflating the two shipped a broken `upscale`.
@@ -405,6 +426,7 @@ function requireEventStream(response: Response): void {
 
 export class ManagedClient {
   private readonly baseUrl: string;
+  private capabilitiesPromise: Promise<Record<string, unknown>> | null = null;
 
   constructor(
     private readonly apiKey: string,
@@ -449,7 +471,15 @@ export class ManagedClient {
   }
 
   async getCapabilities(): Promise<Record<string, unknown>> {
-    const capabilities = await this.request<Record<string, unknown>>("/v1/capabilities");
+    this.capabilitiesPromise ??= this.request<Record<string, unknown>>("/v1/capabilities").catch(
+      (error: unknown) => {
+        // Cache a successful contract for the session, but let a transient startup
+        // failure retry. Remembering a rejected promise would pin the fallback forever.
+        this.capabilitiesPromise = null;
+        throw error;
+      },
+    );
+    const capabilities = await this.capabilitiesPromise;
     if (capabilities.api_version !== "1") {
       throw new Error("Unsupported DreamLayer Agent API version");
     }
@@ -478,28 +508,47 @@ export class ManagedClient {
 
   async uploadInput(file: Blob, filename = "input.png"): Promise<ManagedInputAsset> {
     const suffix = filename.slice(filename.lastIndexOf(".")).toLowerCase();
-    if (file.size > DIRECT_INPUT_BYTES || RAW_INPUT_SUFFIXES.has(suffix)) {
+    const capabilities = await this.getCapabilities();
+    const advertised = capabilities.supported_input_extensions;
+    const supported = Array.isArray(advertised)
+      ? new Set(advertised.filter((item): item is string => typeof item === "string"))
+      : LEGACY_INPUT_SUFFIXES;
+    if (!supported.has(suffix)) {
+      throw new Error(`${filename} is not a supported image or camera RAW file`);
+    }
+    if (file.size > DIRECT_INPUT_BYTES || !RASTER_INPUT_SUFFIXES.has(suffix)) {
       const contentType = file.type || "application/octet-stream";
       const upload = await this.request<ManagedInputUpload>("/v1/input-assets/uploads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename, size_bytes: file.size, content_type: contentType }),
       });
-      const target = new URL(upload.upload_url, `${this.baseUrl}/`).toString();
+      const targetUrl = new URL(upload.upload_url, `${this.baseUrl}/`);
       const headers = new Headers({ "Content-Type": upload.content_type });
       if (upload.mode === "signed") {
         headers.set("x-goog-content-length-range", `0,${upload.maximum_bytes}`);
       } else {
+        if (targetUrl.origin !== new URL(this.baseUrl).origin) {
+          throw new ApiError(502, "DreamLayer input upload", "refused an off-origin upload URL");
+        }
         headers.set("Authorization", `Bearer ${this.apiKey}`);
         headers.set("DreamLayer-Version", "1");
       }
-      const response = await fetch(target, {
-        method: upload.http_method,
-        headers,
-        body: file,
-        redirect: "manual",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      let response: Response;
+      try {
+        response = await fetch(targetUrl, {
+          method: upload.http_method,
+          headers,
+          body: file,
+          redirect: "manual",
+          signal: AbortSignal.timeout(uploadTimeoutMs(file.size)),
+        });
+      } catch (error) {
+        if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+          throw new UploadTimeoutError();
+        }
+        throw error;
+      }
       if (!response.ok) throw await apiError(response, "DreamLayer input upload");
       return this.request(`/v1/input-assets/uploads/${encodeURIComponent(upload.upload_id)}/finalize`, {
         method: "POST",
