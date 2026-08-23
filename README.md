@@ -49,7 +49,7 @@ starts at zero credits, and each finished image costs one.
 | Tool | What it does |
 |---|---|
 | `dreamlayer_capabilities` | Read the contract and the operations this key may run. Spends nothing. |
-| `dreamlayer_upload_image` | Upload one local image and get an `input_asset_id`. |
+| `dreamlayer_upload_image` | Upload PNG, JPEG, WebP, or camera RAW (up to 200 MB) and get an `input_asset_id`. |
 | `dreamlayer_generate` | Generate or edit. Returns the event stream. |
 | `dreamlayer_execution` | Read canonical state for one execution. |
 | `dreamlayer_events` | Resume a stream after a drop, from a last event id. |

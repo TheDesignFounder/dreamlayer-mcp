@@ -244,7 +244,7 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", minLength: 1, description: "Absolute path to a PNG, JPEG, or WEBP." },
+        path: { type: "string", minLength: 1, description: "Absolute path to a PNG, JPEG, WEBP, or camera RAW." },
       },
       required: ["path"],
       additionalProperties: false,
@@ -330,8 +330,12 @@ export const TOOL_DEFINITIONS = [
   },
 ] as const;
 
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
-const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const IMAGE_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".webp", ".3fr", ".arw", ".cr2", ".cr3", ".dng",
+  ".erf", ".fff", ".iiq", ".kdc", ".mef", ".mos", ".mrw", ".nef", ".nrw",
+  ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f",
+]);
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 /**
  * Drain a stream into a bounded result.
@@ -401,12 +405,14 @@ export async function callTool(
         }
         const extension = path.extname(filePath).toLowerCase();
         if (!IMAGE_EXTENSIONS.has(extension)) {
-          throw new Error(`unsupported image type ${extension || "(none)"}; use PNG, JPEG, or WEBP`);
+          throw new Error(
+            `unsupported image type ${extension || "(none)"}; use PNG, JPEG, WEBP, or camera RAW`,
+          );
         }
         const bytes = await readFile(filePath);
         if (bytes.byteLength > MAX_UPLOAD_BYTES) {
           throw new Error(
-            `image is ${Math.round(bytes.byteLength / 1024 / 1024)} MB; the limit is 20 MB`,
+            `image is ${Math.round(bytes.byteLength / 1024 / 1024)} MB; the limit is 200 MB`,
           );
         }
         const asset = await client.uploadInput(

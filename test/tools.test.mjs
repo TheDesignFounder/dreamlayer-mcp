@@ -8,7 +8,10 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
@@ -31,8 +34,9 @@ function fakeApi(behaviour) {
     let raw = "";
     request.on("data", (chunk) => (raw += chunk));
     request.on("end", () => {
-      const body = raw ? JSON.parse(raw) : {};
-      calls.push({ url: request.url, headers: request.headers, body });
+      const isJson = String(request.headers["content-type"] ?? "").includes("application/json");
+      const body = raw && isJson ? JSON.parse(raw) : {};
+      calls.push({ method: request.method, url: request.url, headers: request.headers, body });
 
       if (request.url === "/v1/capabilities") {
         response.writeHead(200, { "content-type": "application/json" });
@@ -87,6 +91,37 @@ function fakeApi(behaviour) {
           );
         }
         response.end();
+        return;
+      }
+      if (request.url === "/v1/input-assets/uploads" && request.method === "POST") {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            upload_id: "11111111-1111-4111-8111-111111111111",
+            upload_url: "/v1/input-assets/uploads/11111111-1111-4111-8111-111111111111/raw",
+            http_method: "PUT",
+            mode: "proxied",
+            content_type: "application/octet-stream",
+            maximum_bytes: 209715200,
+            expires_at: "2030-01-01T00:00:00Z",
+          }),
+        );
+        return;
+      }
+      if (/^\/v1\/input-assets\/uploads\/[^/]+\/raw$/.test(request.url) && request.method === "PUT") {
+        response.writeHead(204).end();
+        return;
+      }
+      if (/^\/v1\/input-assets\/uploads\/[^/]+\/finalize$/.test(request.url) && request.method === "POST") {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            input_asset_id: "11111111-1111-4111-8111-111111111111",
+            width: 8,
+            height: 8,
+            expires_at: "2030-01-01T00:00:00Z",
+          }),
+        );
         return;
       }
       response.writeHead(404).end();
@@ -171,8 +206,9 @@ function listToolsTwice(apiUrl, gap) {
         ...process.env,
         DREAMLAYER_API_KEY: "dlr_live_test_key",
         DREAMLAYER_API_URL: apiUrl,
-        // A one-second negative window, so the retry is observable inside a test.
-        DREAMLAYER_OPERATIONS_RETRY_MS: "1000",
+        // A half-second negative window leaves enough scheduling margin for the
+        // retry to be observable even when the full subprocess suite is busy.
+        DREAMLAYER_OPERATIONS_RETRY_MS: "500",
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -314,6 +350,22 @@ test("dreamlayer_generate sends only fields the API accepts, and names the opera
   assert.equal(payload.status, "completed");
   assert.equal(payload.execution_id, "22222222-2222-4222-8222-222222222222");
   assert.equal(payload.asset.asset_id, "44444444-4444-4444-8444-444444444444");
+});
+
+test("dreamlayer_upload_image sends camera RAW through staged server normalization", async () => {
+  const api = await listen(fakeApi({}));
+  const directory = await mkdtemp(path.join(tmpdir(), "dreamlayer-mcp-raw-"));
+  const source = path.join(directory, "camera.dng");
+  await writeFile(source, Buffer.from("89504e470d0a1a0a", "hex"));
+
+  const { payload } = await callTool(api.url, "dreamlayer_upload_image", { path: source });
+  const calls = api.calls.map((call) => `${call.method} ${call.url}`);
+  api.close();
+
+  assert.equal(payload.input_asset_id, "11111111-1111-4111-8111-111111111111");
+  assert.ok(calls.includes("POST /v1/input-assets/uploads"));
+  assert.ok(calls.some((value) => /PUT \/v1\/input-assets\/uploads\/[^/]+\/raw/.test(value)));
+  assert.ok(calls.some((value) => /POST \/v1\/input-assets\/uploads\/[^/]+\/finalize/.test(value)));
 });
 
 test("every operation the SERVER advertises is one the request may actually carry", async () => {

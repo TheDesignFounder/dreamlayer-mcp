@@ -79,6 +79,23 @@ export type ManagedInputAsset = {
   expires_at: string;
 };
 
+type ManagedInputUpload = {
+  upload_id: string;
+  upload_url: string;
+  http_method: "PUT";
+  mode: "proxied" | "signed";
+  content_type: string;
+  maximum_bytes: number;
+  expires_at: string;
+};
+
+const DIRECT_INPUT_BYTES = 20 * 1024 * 1024;
+const RAW_INPUT_SUFFIXES = new Set([
+  ".3fr", ".arw", ".cr2", ".cr3", ".dng", ".erf", ".fff", ".iiq", ".kdc",
+  ".mef", ".mos", ".mrw", ".nef", ".nrw", ".orf", ".pef", ".raf", ".raw",
+  ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f",
+]);
+
 export type ManagedExecution = {
   execution_id: string;
   conversation_id: string;
@@ -459,7 +476,35 @@ export class ManagedClient {
     });
   }
 
-  uploadInput(file: Blob, filename = "input.png"): Promise<ManagedInputAsset> {
+  async uploadInput(file: Blob, filename = "input.png"): Promise<ManagedInputAsset> {
+    const suffix = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+    if (file.size > DIRECT_INPUT_BYTES || RAW_INPUT_SUFFIXES.has(suffix)) {
+      const contentType = file.type || "application/octet-stream";
+      const upload = await this.request<ManagedInputUpload>("/v1/input-assets/uploads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, size_bytes: file.size, content_type: contentType }),
+      });
+      const target = new URL(upload.upload_url, `${this.baseUrl}/`).toString();
+      const headers = new Headers({ "Content-Type": upload.content_type });
+      if (upload.mode === "signed") {
+        headers.set("x-goog-content-length-range", `0,${upload.maximum_bytes}`);
+      } else {
+        headers.set("Authorization", `Bearer ${this.apiKey}`);
+        headers.set("DreamLayer-Version", "1");
+      }
+      const response = await fetch(target, {
+        method: upload.http_method,
+        headers,
+        body: file,
+        redirect: "manual",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) throw await apiError(response, "DreamLayer input upload");
+      return this.request(`/v1/input-assets/uploads/${encodeURIComponent(upload.upload_id)}/finalize`, {
+        method: "POST",
+      });
+    }
     const body = new FormData();
     body.append("file", file, filename);
     return this.request("/v1/input-assets", { method: "POST", body });
