@@ -9,10 +9,34 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 
 const ENTRY = fileURLToPath(new URL("../dist/index.js", import.meta.url));
+let protocolApi;
+let protocolApiUrl;
+
+before(async () => {
+  protocolApi = createServer((request, response) => {
+    assert.equal(request.url, "/v1/capabilities");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        api_version: "1",
+        operations: ["text_to_image", "image_to_image", "background_remove", "upscale"],
+      }),
+    );
+  });
+  await new Promise((resolve) => protocolApi.listen(0, "127.0.0.1", resolve));
+  protocolApiUrl = `http://127.0.0.1:${protocolApi.address().port}`;
+});
+
+after(async () => {
+  await new Promise((resolve, reject) =>
+    protocolApi.close((error) => (error ? reject(error) : resolve())),
+  );
+});
 
 /**
  * Speak newline-delimited JSON-RPC to a spawned server and collect the replies.
@@ -63,6 +87,45 @@ const send = (child, message) => {
   child.stdin.write(`${JSON.stringify(message)}\n`);
 };
 
+/** Wait for one JSON-RPC response instead of guessing how long a loaded runner needs. */
+function waitForReply(child, id) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for JSON-RPC id ${id}`));
+    }, 8_000);
+    const onExit = (code) => {
+      cleanup();
+      reject(new Error(`server exited with ${code} before JSON-RPC id ${id}`));
+    };
+    const onData = (chunk) => {
+      buffer += chunk.toString();
+      let boundary = buffer.indexOf("\n");
+      while (boundary >= 0) {
+        const line = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 1);
+        if (line) {
+          const message = JSON.parse(line);
+          if (message.id === id) {
+            cleanup();
+            resolve(message);
+            return;
+          }
+        }
+        boundary = buffer.indexOf("\n");
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.stdout.off("data", onData);
+      child.off("exit", onExit);
+    };
+    child.stdout.on("data", onData);
+    child.on("exit", onExit);
+  });
+}
+
 test("refuses to start without a key, and says how to fix it", async () => {
   const { code, stdout, stderr } = await withServer(
     { DREAMLAYER_API_KEY: "" },
@@ -81,8 +144,12 @@ test("refuses to start without a key, and says how to fix it", async () => {
 
 test("completes an MCP initialize and lists its tools over stdio", async () => {
   const { stdout, stderr } = await withServer(
-    { DREAMLAYER_API_KEY: "dlr_live_not_a_real_key_for_protocol_only" },
+    {
+      DREAMLAYER_API_KEY: "dlr_live_not_a_real_key_for_protocol_only",
+      DREAMLAYER_API_URL: protocolApiUrl,
+    },
     async (child) => {
+      const initializeReply = waitForReply(child, 1);
       send(child, {
         jsonrpc: "2.0",
         id: 1,
@@ -93,10 +160,11 @@ test("completes an MCP initialize and lists its tools over stdio", async () => {
           clientInfo: { name: "test", version: "0" },
         },
       });
+      await initializeReply;
       send(child, { jsonrpc: "2.0", method: "notifications/initialized" });
-      await new Promise((r) => setTimeout(r, 300));
+      const listReply = waitForReply(child, 2);
       send(child, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-      await new Promise((r) => setTimeout(r, 600));
+      await listReply;
     },
   );
 
@@ -132,18 +200,23 @@ test("completes an MCP initialize and lists its tools over stdio", async () => {
 
 test("every tool declares a closed input schema", async () => {
   const { stdout } = await withServer(
-    { DREAMLAYER_API_KEY: "dlr_live_not_a_real_key_for_protocol_only" },
+    {
+      DREAMLAYER_API_KEY: "dlr_live_not_a_real_key_for_protocol_only",
+      DREAMLAYER_API_URL: protocolApiUrl,
+    },
     async (child) => {
+      const initializeReply = waitForReply(child, 1);
       send(child, {
         jsonrpc: "2.0",
         id: 1,
         method: "initialize",
         params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
       });
+      await initializeReply;
       send(child, { jsonrpc: "2.0", method: "notifications/initialized" });
-      await new Promise((r) => setTimeout(r, 300));
+      const listReply = waitForReply(child, 2);
       send(child, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-      await new Promise((r) => setTimeout(r, 600));
+      await listReply;
     },
   );
 
@@ -182,18 +255,20 @@ test("the generate tool still offers every operation the API supports", async ()
   // The operations are the reason a model can ask for a cutout deterministically rather
   // than describing one and hoping. Losing them silently would be a real regression.
   const { stdout } = await withServer(
-    { DREAMLAYER_API_KEY: "dlr_live_test" },
+    { DREAMLAYER_API_KEY: "dlr_live_test", DREAMLAYER_API_URL: protocolApiUrl },
     async (child) => {
+      const initializeReply = waitForReply(child, 1);
       send(child, {
         jsonrpc: "2.0",
         id: 1,
         method: "initialize",
         params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
       });
+      await initializeReply;
       send(child, { jsonrpc: "2.0", method: "notifications/initialized" });
-      await new Promise((r) => setTimeout(r, 300));
+      const listReply = waitForReply(child, 2);
       send(child, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-      await new Promise((r) => setTimeout(r, 600));
+      await listReply;
     },
   );
 
