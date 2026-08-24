@@ -11,6 +11,7 @@
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { readFileSync } from "node:fs";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -20,7 +21,11 @@ import { ManagedClient } from "./client.js";
 import { callTool, toolDefinitionsFor } from "./tools.js";
 
 const NAME = "dreamlayer";
-const VERSION = "0.1.0";
+const VERSION = String(
+  (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: unknown;
+  }).version,
+);
 
 function resolveApiKey(): string {
   const key = (process.env.DREAMLAYER_API_KEY ?? "").trim();

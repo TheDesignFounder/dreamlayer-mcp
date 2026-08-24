@@ -5,10 +5,6 @@ Image generation and editing tools for MCP-compatible AI clients, backed by the
 
 Nothing to clone, nothing to build.
 
-> **Not yet publishable.** This package sends an `operation` field that requires
-> the gateway build adding it to `ExecuteRequest`. Against the currently deployed
-> API every call returns `422 extra_forbidden`. Deploy that build first.
-
 ## Install
 
 Add it to your client. Claude Code:

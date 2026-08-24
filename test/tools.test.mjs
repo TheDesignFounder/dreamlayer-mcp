@@ -216,8 +216,49 @@ function listToolsTwice(apiUrl, gap) {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
-    child.stdout.on("data", (c) => (stdout += c.toString()));
+    let pending = "";
+    let first = null;
+    let settled = false;
+    let retryTimer = null;
     const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (retryTimer) clearTimeout(retryTimer);
+      child.kill();
+      if (error) reject(error);
+      else resolve(value);
+    };
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      pending += text;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines.filter(Boolean)) {
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.id === 2 && first === null) {
+          first = message.result.tools;
+          // Measure the negative-cache window from the first completed request,
+          // not from process spawn. Under a busy CI runner two absolute timers can
+          // fire together before request 1 finishes, making the test manufacture
+          // the stale-cache behavior it is supposed to detect.
+          retryTimer = setTimeout(
+            () => send({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+            gap,
+          );
+        } else if (message.id === 3 && first !== null) {
+          finish(null, [first, message.result.tools]);
+        }
+      }
+    });
+    child.once("error", (error) => finish(error));
     send({
       jsonrpc: "2.0",
       id: 1,
@@ -226,15 +267,10 @@ function listToolsTwice(apiUrl, gap) {
     });
     send({ jsonrpc: "2.0", method: "notifications/initialized" });
     setTimeout(() => send({ jsonrpc: "2.0", id: 2, method: "tools/list" }), 300);
-    setTimeout(() => send({ jsonrpc: "2.0", id: 3, method: "tools/list" }), 300 + gap);
-    setTimeout(() => {
-      child.kill();
-      const msgs = stdout.split("\n").filter(Boolean)
-        .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-      const a = msgs.find((m) => m.id === 2), b = msgs.find((m) => m.id === 3);
-      if (!a || !b) { reject(new Error(`missing tools/list replies. stdout: ${stdout}`)); return; }
-      resolve([a.result.tools, b.result.tools]);
-    }, 300 + gap + 1800);
+    const timeout = setTimeout(
+      () => finish(new Error(`missing tools/list replies. stdout: ${stdout}`)),
+      12_000,
+    );
   });
 }
 
