@@ -17,6 +17,7 @@ import {
   ApiError,
   StreamIdleError,
   UploadTimeoutError,
+  terminalExecutionError,
 } from "./client.js";
 
 export type ToolResult = {
@@ -26,6 +27,8 @@ export type ToolResult = {
 
 /** Cap what one call returns so a long run cannot flood a client's context. */
 const MAX_EVENTS_RETURNED = 256;
+
+class ToolInputError extends Error {}
 
 function ok(value: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
@@ -42,11 +45,11 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
     const guidance =
       options.uploadOnly
         ? "No image job was started. Correct the error, then retry the upload."
-        : error.status === 402
+        : error.reason === "insufficient_credits"
         ? "Out of credits. Buy a pack at https://platform.dreamlayer.io/console/billing."
-        : error.status === 401
+        : error.reason === "authentication_failed"
           ? "The API key is missing, invalid, or revoked."
-          : error.status === 403
+          : error.reason === "access_denied"
             ? "This account is not enabled for the Agent API."
             : error.retryable
               ? "Temporary. Retry with the same idempotency_key."
@@ -59,7 +62,11 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
             {
               error: {
                 status: error.status,
+                code: error.code,
+                reason: error.reason,
                 detail: error.detail,
+                message: error.detail,
+                retryable: error.retryable,
                 request_id: error.requestId,
                 guidance,
               },
@@ -89,7 +96,12 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
           text: JSON.stringify(
             {
               error: {
+                code: "SERVICE_UNAVAILABLE",
+                reason: "temporarily_unavailable",
                 detail: error.message,
+                message: error.message,
+                retryable: true,
+                request_id: null,
                 execution_id: executionId,
                 guidance: executionId
                   ? "The job may still be running. Poll dreamlayer_status with this " +
@@ -114,7 +126,12 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
           text: JSON.stringify(
             {
               error: {
+                code: "SERVICE_UNAVAILABLE",
+                reason: "temporarily_unavailable",
                 detail: error.message,
+                message: error.message,
+                retryable: true,
+                request_id: null,
                 guidance: "No image job was started. Retry the upload.",
               },
             },
@@ -126,8 +143,45 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
       isError: true,
     };
   }
-  const message = error instanceof Error ? error.message : "Unknown error";
-  return { content: [{ type: "text", text: JSON.stringify({ error: { message } }) }], isError: true };
+  if (error instanceof ToolInputError) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: {
+              code: "VALIDATION_FAILED",
+              reason: "invalid_request",
+              message: error.message,
+              retryable: false,
+              request_id: null,
+            },
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+  // Unknown exceptions are implementation failures, not public response text. Never
+  // echo their message: filesystem errors can contain local filenames, and transport
+  // errors can contain URLs or other private details.
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          error: {
+            code: "INTERNAL_ERROR",
+            reason: "generation_failed",
+            message: "DreamLayer tool failed.",
+            retryable: false,
+            request_id: null,
+          },
+        }),
+      },
+    ],
+    isError: true,
+  };
 }
 
 /**
@@ -262,6 +316,12 @@ export const TOOL_DEFINITIONS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "dreamlayer_balance",
+    description:
+      "Read promotional, purchased, and total credits owned by this API key. Calls no provider and spends nothing.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "dreamlayer_upload_image",
     description:
       "Upload one local image for use as a reference. Returns an input_asset_id to pass to dreamlayer_generate.",
@@ -363,7 +423,11 @@ const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
  * away. The execution_id survives either way, which is the whole point: the caller
  * has already been charged and must be able to resume.
  */
-async function collect(stream: AsyncGenerator<ManagedEvent>): Promise<ToolResult> {
+async function collect(
+  client: ManagedClient,
+  stream: AsyncGenerator<ManagedEvent>,
+  executionIdHint?: string,
+): Promise<ToolResult> {
   const events: ManagedEvent[] = [];
   let truncated = false;
   try {
@@ -391,9 +455,15 @@ async function collect(stream: AsyncGenerator<ManagedEvent>): Promise<ToolResult
   const done = events.find((event) => event.event === "done");
   const asset = events.find((event) => event.event === "asset");
   const question = events.find((event) => event.event === "question");
+  const executionId = String(started?.data.execution_id ?? executionIdHint ?? "");
+
+  if (done?.data.status === "failed" && executionId) {
+    const terminal = terminalExecutionError(await client.getExecution(executionId));
+    if (terminal) throw terminal;
+  }
 
   return ok({
-    execution_id: started?.data.execution_id ?? null,
+    execution_id: executionId || null,
     conversation_id: started?.data.conversation_id ?? null,
     status: done?.data.status ?? (truncated ? "running" : "unknown"),
     asset: asset ? { asset_id: asset.data.asset_id, download_url: asset.data.download_url } : null,
@@ -417,16 +487,22 @@ export async function callTool(
       case "dreamlayer_capabilities":
         return ok(await client.getCapabilities());
 
+      case "dreamlayer_balance":
+        return ok(await client.getBalance());
+
       case "dreamlayer_upload_image": {
         const filePath = String(args.path ?? "");
         if (!path.isAbsolute(filePath)) {
-          throw new Error("path must be absolute");
+          throw new ToolInputError("The local image path must be absolute.");
         }
-        const fileStat = await stat(filePath);
+        let fileStat: Awaited<ReturnType<typeof stat>>;
+        try {
+          fileStat = await stat(filePath);
+        } catch {
+          throw new ToolInputError("The local image could not be read.");
+        }
         if (fileStat.size > MAX_UPLOAD_BYTES) {
-          throw new Error(
-            `image is ${Math.round(fileStat.size / 1024 / 1024)} MB; the limit is 200 MB`,
-          );
+          throw new ToolInputError("The local image exceeds the 200 MB limit.");
         }
         const asset = await client.uploadInput(
           await openAsBlob(filePath),
@@ -442,6 +518,7 @@ export async function callTool(
         // stable key: the retry it is meant to protect would not match.
         const idempotencyKey = typeof supplied === "string" && supplied ? supplied : randomUUID();
         return await collect(
+          client,
           client.execute(rest as Parameters<ManagedClient["execute"]>[0], { idempotencyKey }),
         );
       }
@@ -451,17 +528,19 @@ export async function callTool(
 
       case "dreamlayer_events":
         return await collect(
+          client,
           client.events(
             String(args.execution_id),
             typeof args.last_event_id === "string" ? args.last_event_id : undefined,
           ),
+          String(args.execution_id),
         );
 
       case "dreamlayer_cancel":
         return ok(await client.cancel(String(args.execution_id)));
 
       default:
-        throw new Error(`unknown tool ${name}`);
+        throw new ToolInputError("Unknown DreamLayer tool.");
     }
   } catch (error) {
     return fail(error, { uploadOnly: name === "dreamlayer_upload_image" });

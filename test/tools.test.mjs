@@ -55,17 +55,43 @@ function fakeApi(behaviour) {
         return;
       }
 
+      if (request.url === "/v1/balance") {
+        response.writeHead(behaviour.balanceStatus ?? 200, {
+          "content-type": "application/json",
+          "cache-control": "private, no-store",
+        });
+        response.end(
+          JSON.stringify(
+            behaviour.balanceBody ?? {
+              promotional: 3,
+              purchased: 5,
+              available: 8,
+              credit_usd: "0.17",
+            },
+          ),
+        );
+        return;
+      }
+
+      if (/^\/v1\/executions\/[^/]+$/.test(request.url) && request.method === "GET") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(behaviour.execution ?? {}));
+        return;
+      }
+
       if (request.url === "/v1/execute") {
         if (behaviour.status && behaviour.status !== 200) {
           response.writeHead(behaviour.status, { "content-type": "application/json" });
           response.end(
-            JSON.stringify({
-              error: {
-                code: "VALIDATION_FAILED",
-                message: behaviour.message ?? "nope",
-                request_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            JSON.stringify(
+              behaviour.errorBody ?? {
+                error: {
+                  code: "VALIDATION_FAILED",
+                  message: behaviour.message ?? "nope",
+                  request_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                },
               },
-            }),
+            ),
           );
           return;
         }
@@ -498,8 +524,146 @@ test("an API failure returns the reason and the request id, not a bare status", 
   assert.equal(reply.result.isError, true, "a failure must be marked, not returned as success");
   assert.equal(payload.error.status, 402);
   assert.match(payload.error.detail, /insufficient credits/);
+  assert.equal(payload.error.reason, "insufficient_credits");
+  assert.equal(payload.error.retryable, false);
   assert.equal(payload.error.request_id, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
   assert.match(payload.error.guidance, /credits/i);
+});
+
+test("dreamlayer_balance reads only this authenticated key and starts no paid work", async () => {
+  const api = await listen(fakeApi({}));
+  const { reply, payload } = await callTool(api.url, "dreamlayer_balance", {});
+  const balanceCall = api.calls.find((call) => call.url === "/v1/balance");
+  const paidCall = api.calls.some((call) => call.url === "/v1/execute");
+  api.close();
+
+  assert.notEqual(reply.result.isError, true);
+  assert.deepEqual(payload, {
+    promotional: 3,
+    purchased: 5,
+    available: 8,
+    credit_usd: "0.17",
+  });
+  assert.equal(balanceCall.method, "GET");
+  assert.equal(balanceCall.headers.authorization, "Bearer dlr_live_test_key");
+  assert.equal(balanceCall.headers["dreamlayer-version"], "1");
+  assert.equal(balanceCall.url, "/v1/balance", "no account selector may be sent");
+  assert.equal(paidCall, false);
+});
+
+test("balance rejects expanded or inconsistent state without leaking private fields", async () => {
+  const api = await listen(
+    fakeApi({
+      balanceBody: {
+        promotional: 3,
+        purchased: 5,
+        available: 900,
+        credit_usd: "0.17",
+        private_account_name: "do-not-print-this",
+      },
+    }),
+  );
+  const { reply, payload } = await callTool(api.url, "dreamlayer_balance", {});
+  api.close();
+
+  assert.equal(reply.result.isError, true);
+  assert.equal(payload.error.reason, "generation_failed");
+  assert.equal(payload.error.message, "DreamLayer tool failed.");
+  assert.doesNotMatch(JSON.stringify(payload), /do-not-print-this/);
+});
+
+test("402, 409, and 429 retain their closed reason and retry contract", async () => {
+  const cases = [
+    [402, "insufficient_credits", false],
+    [409, "too_many_active_jobs", true],
+    [429, "rate_limited", true],
+  ];
+  for (const [status, reason, retryable] of cases) {
+    const api = await listen(
+      fakeApi({
+        status,
+        errorBody: {
+          error: {
+            code: status === 402 ? "BUDGET_EXCEEDED" : "RATE_LIMITED",
+            reason,
+            message: "private-model rejected secret prompt and filename.png",
+            retryable,
+            request_id: "99999999-9999-4999-8999-999999999999",
+          },
+        },
+      }),
+    );
+    const { reply, payload } = await callTool(api.url, "dreamlayer_generate", {
+      prompt: "secret prompt",
+      operation: "text_to_image",
+    });
+    api.close();
+
+    assert.equal(reply.result.isError, true);
+    assert.equal(payload.error.reason, reason);
+    assert.equal(payload.error.retryable, retryable);
+    assert.equal(payload.error.request_id, "99999999-9999-4999-8999-999999999999");
+    assert.doesNotMatch(JSON.stringify(payload), /private-model|secret prompt|filename\.png/);
+  }
+});
+
+test("a terminal failure is reconciled from canonical state with the same taxonomy", async () => {
+  const executionId = "22222222-2222-4222-8222-222222222222";
+  const api = await listen(
+    fakeApi({
+      events: [
+        {
+          event: "started",
+          data: {
+            execution_id: executionId,
+            conversation_id: "33333333-3333-4333-8333-333333333333",
+          },
+        },
+        { event: "done", data: { status: "failed" } },
+      ],
+      execution: {
+        execution_id: executionId,
+        conversation_id: "33333333-3333-4333-8333-333333333333",
+        status: "failed",
+        image_job: {
+          sanitized_error: {
+            code: "generation_failed",
+            reason: "temporarily_unavailable",
+            message: "private-model raw response and secret prompt",
+            retryable: true,
+            request_id: "88888888-8888-4888-8888-888888888888",
+          },
+        },
+      },
+    }),
+  );
+  const { reply, payload } = await callTool(api.url, "dreamlayer_generate", {
+    prompt: "secret prompt",
+    operation: "text_to_image",
+  });
+  const canonicalRead = api.calls.some((call) => call.url === `/v1/executions/${executionId}`);
+  api.close();
+
+  assert.equal(reply.result.isError, true);
+  assert.equal(payload.error.reason, "temporarily_unavailable");
+  assert.equal(payload.error.retryable, true);
+  assert.equal(payload.error.request_id, "88888888-8888-4888-8888-888888888888");
+  assert.equal(canonicalRead, true);
+  assert.doesNotMatch(JSON.stringify(payload), /private-model|raw response|secret prompt/);
+});
+
+test("local upload failures do not expose filenames", async () => {
+  const api = await listen(fakeApi({}));
+  const privatePath = "/private/tmp/customer-secret-filename.png";
+  const { reply, payload } = await callTool(api.url, "dreamlayer_upload_image", {
+    path: privatePath,
+  });
+  api.close();
+
+  assert.equal(reply.result.isError, true);
+  assert.equal(payload.error.reason, "invalid_request");
+  assert.match(payload.error.message, /could not be read/);
+  assert.doesNotMatch(JSON.stringify(payload), /customer-secret-filename/);
 });
 
 test("dreamlayer_capabilities spends nothing and reports the contract", async () => {
