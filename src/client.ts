@@ -104,27 +104,167 @@ export type ManagedExecution = {
   image_job: Record<string, unknown> | null;
 };
 
+export const PUBLIC_ERROR_REASONS = [
+  "invalid_request",
+  "authentication_failed",
+  "access_denied",
+  "resource_not_found",
+  "insufficient_credits",
+  "conflict",
+  "too_many_active_jobs",
+  "rate_limited",
+  "quota_exceeded",
+  "content_refused",
+  "temporarily_unavailable",
+  "generation_failed",
+] as const;
+
+export type PublicErrorReason = (typeof PUBLIC_ERROR_REASONS)[number];
+
+const PUBLIC_ERROR_SPECS: Record<
+  PublicErrorReason,
+  { readonly message: string; readonly retryable: boolean }
+> = {
+  invalid_request: { message: "The request could not be validated.", retryable: false },
+  authentication_failed: { message: "Authentication failed.", retryable: false },
+  access_denied: {
+    message: "This request is not available for this account.",
+    retryable: false,
+  },
+  resource_not_found: { message: "The requested item was not found.", retryable: false },
+  insufficient_credits: {
+    message: "The account has insufficient credits.",
+    retryable: false,
+  },
+  conflict: { message: "The request conflicts with the current state.", retryable: false },
+  too_many_active_jobs: {
+    message: "Too many image jobs are already in progress.",
+    retryable: true,
+  },
+  rate_limited: { message: "Too many requests. Please try again shortly.", retryable: true },
+  quota_exceeded: { message: "The account quota has been reached.", retryable: false },
+  content_refused: {
+    message: "The request could not be completed under the service policy.",
+    retryable: false,
+  },
+  temporarily_unavailable: {
+    message: "The service is temporarily unavailable. Please try again.",
+    retryable: true,
+  },
+  generation_failed: { message: "Image generation failed.", retryable: false },
+};
+
+const PUBLIC_ERROR_REASON_SET = new Set<string>(PUBLIC_ERROR_REASONS);
+
+function publicReason(value: unknown): PublicErrorReason | null {
+  return typeof value === "string" && PUBLIC_ERROR_REASON_SET.has(value)
+    ? (value as PublicErrorReason)
+    : null;
+}
+
+function reasonForStatus(status: number): PublicErrorReason {
+  if (status === 400 || status === 405 || status === 422) return "invalid_request";
+  if (status === 401) return "authentication_failed";
+  if (status === 403) return "access_denied";
+  if (status === 404) return "resource_not_found";
+  if (status === 402) return "insufficient_credits";
+  if (status === 409) return "conflict";
+  if (status === 429) return "rate_limited";
+  if (status === 502 || status === 503 || status === 504) return "temporarily_unavailable";
+  return "generation_failed";
+}
+
+function defaultCode(reason: PublicErrorReason): string {
+  const codes: Record<PublicErrorReason, string> = {
+    invalid_request: "VALIDATION_FAILED",
+    authentication_failed: "AUTHENTICATION_FAILED",
+    access_denied: "FORBIDDEN",
+    resource_not_found: "NOT_FOUND",
+    insufficient_credits: "BUDGET_EXCEEDED",
+    conflict: "CONFLICT",
+    too_many_active_jobs: "RATE_LIMITED",
+    rate_limited: "RATE_LIMITED",
+    quota_exceeded: "BUDGET_EXCEEDED",
+    content_refused: "CONTENT_REFUSED",
+    temporarily_unavailable: "SERVICE_UNAVAILABLE",
+    generation_failed: "INTERNAL_ERROR",
+  };
+  return codes[reason];
+}
+
+function statusForReason(reason: PublicErrorReason): number {
+  const statuses: Record<PublicErrorReason, number> = {
+    invalid_request: 422,
+    authentication_failed: 401,
+    access_denied: 403,
+    resource_not_found: 404,
+    insufficient_credits: 402,
+    conflict: 409,
+    too_many_active_jobs: 429,
+    rate_limited: 429,
+    quota_exceeded: 402,
+    content_refused: 422,
+    temporarily_unavailable: 503,
+    generation_failed: 500,
+  };
+  return statuses[reason];
+}
+
+const ERROR_IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+function publicIdentifier(value: unknown): string | null {
+  return typeof value === "string" && ERROR_IDENTIFIER_PATTERN.test(value) ? value : null;
+}
+
 export class ApiError extends Error {
+  public readonly detail: string;
+  public readonly requestId: string | null;
+  public readonly code: string;
+  public readonly reason: PublicErrorReason;
+
   constructor(
     public readonly status: number,
     surface = "DreamLayer Agent API",
-    public readonly detail: string | null = null,
+    detail: string | null = null,
     /** Server-assigned id for this failure. The only handle support can search on. */
-    public readonly requestId: string | null = null,
+    requestId: string | null = null,
+    code: string | null = null,
+    reason: PublicErrorReason = reasonForStatus(status),
   ) {
-    super(
-      detail
-        ? `${detail}${requestId ? ` (request ${requestId})` : ""}`
-        : `${surface} request failed (${status})`,
-    );
+    const safeDetail = detail ?? PUBLIC_ERROR_SPECS[reason].message;
+    super(`${safeDetail || `${surface} request failed (${status})`}${requestId ? ` (request ${requestId})` : ""}`);
     this.name = "ApiError";
+    this.detail = safeDetail;
+    this.requestId = requestId;
+    this.code = code ?? defaultCode(reason);
+    this.reason = reason;
   }
 
   /** Whether retrying with the same idempotency key is worth doing. */
   get retryable(): boolean {
-    return this.status === 429 || this.status >= 500;
+    return PUBLIC_ERROR_SPECS[this.reason].retryable;
+  }
+
+  /** The same stable fields exposed by REST and CLI, with no private response text. */
+  toPublicEnvelope(): Record<string, unknown> {
+    return {
+      error: {
+        code: this.code,
+        reason: this.reason,
+        message: this.detail,
+        retryable: this.retryable,
+        request_id: this.requestId,
+      },
+    };
   }
 }
+
+export type ManagedBalance = {
+  promotional: number;
+  purchased: number;
+  available: number;
+  credit_usd: "0.17";
+};
 
 /**
  * A stream that went silent, as distinct from a slow one.
@@ -153,7 +293,6 @@ export class UploadTimeoutError extends Error {
 }
 
 const ERROR_BODY_LIMIT = 16 * 1024;
-const ERROR_DETAIL_LIMIT = 300;
 /**
  * A plain request: send, get a body back. Bounded work, so a total cap is right.
  */
@@ -206,39 +345,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function sanitizedErrorDetail(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return normalized ? normalized.slice(0, ERROR_DETAIL_LIMIT) : null;
+async function boundedErrorBody(response: Response): Promise<string> {
+  const length = Number(response.headers.get("content-length") ?? "0");
+  if (!Number.isFinite(length) || length < 0 || length > ERROR_BODY_LIMIT || !response.body) {
+    return "";
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let body = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return body + decoder.decode();
+      total += value.byteLength;
+      if (total > ERROR_BODY_LIMIT) {
+        await reader.cancel();
+        return "";
+      }
+      body += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 async function apiError(response: Response, surface = "DreamLayer Agent API"): Promise<ApiError> {
-  let detail: string | null = null;
-  let requestId: string | null = null;
+  let reason = reasonForStatus(response.status);
+  let code: string | null = null;
+  let requestId = publicRequestId(response.headers.get("x-request-id"));
   try {
-    const length = Number(response.headers.get("content-length") ?? "0");
-    if (!Number.isFinite(length) || length < 0 || length > ERROR_BODY_LIMIT) {
-      return new ApiError(response.status, surface);
-    }
-    const parsed = JSON.parse(await response.text()) as unknown;
-    if (isRecord(parsed)) {
-      // Two shapes in the wild. The gateway returns
-      // {"error":{"code","message","category","request_id"}}; older surfaces and
-      // FastAPI's own handlers return {"detail": "..."}. Reading only the latter is
-      // why every failure used to print a bare status code and nothing else.
-      detail = sanitizedErrorDetail(parsed.detail);
-      if (isRecord(parsed.error)) {
-        detail = detail ?? sanitizedErrorDetail(parsed.error.message);
-        requestId = sanitizedErrorDetail(parsed.error.request_id);
-      }
+    const raw = await boundedErrorBody(response);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    if (isRecord(parsed) && isRecord(parsed.error)) {
+      // Treat only the closed reason/code/id fields as data. The local message table
+      // deliberately ignores arbitrary remote detail so a private upstream response
+      // cannot leak through a client even if a server regression serializes it.
+      reason = publicReason(parsed.error.reason) ?? reason;
+      code = publicIdentifier(parsed.error.code);
+      requestId = publicRequestId(parsed.error.request_id) ?? requestId;
     }
   } catch {
-    detail = null;
+    // A malformed or oversized response still becomes a closed, status-derived error.
   }
-  return new ApiError(response.status, surface, detail, requestId);
+  return new ApiError(response.status, surface, null, requestId, code, reason);
 }
 
 const MANAGED_EVENT_NAMES = new Set<ManagedEventName>([
@@ -252,6 +402,52 @@ const MANAGED_EVENT_NAMES = new Set<ManagedEventName>([
 ]);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function publicRequestId(value: unknown): string | null {
+  return typeof value === "string" && UUID_PATTERN.test(value) ? value : null;
+}
+
+export function managedBalance(value: unknown): ManagedBalance {
+  if (!isRecord(value)) throw new Error("Invalid DreamLayer balance response");
+  const exact = ["available", "credit_usd", "promotional", "purchased"];
+  if (Object.keys(value).sort().join("\0") !== exact.join("\0")) {
+    throw new Error("Invalid DreamLayer balance response");
+  }
+  for (const field of ["promotional", "purchased", "available"] as const) {
+    if (!Number.isSafeInteger(value[field]) || Number(value[field]) < 0) {
+      throw new Error("Invalid DreamLayer balance response");
+    }
+  }
+  if (
+    value.credit_usd !== "0.17" ||
+    Number(value.available) !== Number(value.promotional) + Number(value.purchased)
+  ) {
+    throw new Error("Invalid DreamLayer balance response");
+  }
+  return {
+    promotional: Number(value.promotional),
+    purchased: Number(value.purchased),
+    available: Number(value.available),
+    credit_usd: "0.17",
+  };
+}
+
+/** Convert a terminal job failure into the same safe contract used by HTTP errors. */
+export function terminalExecutionError(execution: ManagedExecution): ApiError | null {
+  if (!isRecord(execution.image_job) || !isRecord(execution.image_job.sanitized_error)) {
+    return execution.status === "failed" ? new ApiError(500) : null;
+  }
+  const error = execution.image_job.sanitized_error;
+  const reason = publicReason(error.reason) ?? "generation_failed";
+  return new ApiError(
+    statusForReason(reason),
+    "DreamLayer execution",
+    null,
+    publicRequestId(error.request_id),
+    publicIdentifier(error.code),
+    reason,
+  );
+}
 
 /**
  * Validate one sanitized event against the published contract.
@@ -488,6 +684,10 @@ export class ManagedClient {
 
   getExecution(executionId: string): Promise<ManagedExecution> {
     return this.request(`/v1/executions/${encodeURIComponent(executionId)}`);
+  }
+
+  async getBalance(): Promise<ManagedBalance> {
+    return managedBalance(await this.request<unknown>("/v1/balance"));
   }
 
   cancel(executionId: string): Promise<ManagedExecution> {
