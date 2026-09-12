@@ -45,3 +45,22 @@ test('canonical completion recovers an absent terminal event', async()=>{
  const data=JSON.parse(result.content[0].text);
  assert.equal(data.status,'completed');assert.equal(data.asset.asset_id,eid);assert.equal(data.last_event_id,'99');assert.ok(!data.next_step);
 });
+
+
+test('status lookup failure retains the execution and cursor', async()=>{
+ const api={events:async function*(){},getExecution:async()=>{throw new Error('status unavailable');}};
+ const result=await callTool(api,'dreamlayer_events',{execution_id:eid,last_event_id:'42'});
+ const data=JSON.parse(result.content[0].text);
+ assert.equal(data.status,'running');assert.equal(data.execution_id,eid);assert.equal(data.last_event_id,'42');assert.match(data.next_step,/dreamlayer_events/);
+});
+
+test('canonical status body has a ten second read bound', async()=>{
+ const server=http.createServer((_req,res)=>{res.writeHead(200,{'Content-Type':'application/json'});res.write('{');});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try{
+  const api=new ManagedClient('dlr_live_fixture',`http://127.0.0.1:${server.address().port}`);
+  const started=Date.now();
+  await assert.rejects(api.getExecution(eid));
+  assert.ok(Date.now()-started<20_000);
+ }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+});

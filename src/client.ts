@@ -707,7 +707,7 @@ export class ManagedClient {
   }
 
   async getCapabilities(): Promise<Record<string, unknown>> {
-    this.capabilitiesPromise ??= this.request<Record<string, unknown>>("/v1/capabilities").catch(
+    this.capabilitiesPromise ??= this.request<Record<string, unknown>>("/v1/capabilities", {}, 10_000).catch(
       (error: unknown) => {
         // Cache a successful contract for the session, but let a transient startup
         // failure retry. Remembering a rejected promise would pin the fallback forever.
@@ -723,7 +723,7 @@ export class ManagedClient {
   }
 
   getExecution(executionId: string): Promise<ManagedExecution> {
-    return this.request(`/v1/executions/${encodeURIComponent(executionId)}`);
+    return this.request(`/v1/executions/${encodeURIComponent(executionId)}`, {}, 10_000);
   }
 
   async getBalance(): Promise<ManagedBalance> {
@@ -895,7 +895,7 @@ export class ManagedClient {
     }
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${this.apiKey}`);
     headers.set("DreamLayer-Version", "1");
@@ -903,7 +903,7 @@ export class ManagedClient {
       ...init,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) throw await apiError(response);
     if (response.status === 204) return undefined as T;

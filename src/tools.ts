@@ -467,15 +467,29 @@ async function collect(
 
   // A worker can commit terminal state before its final event is persisted.
   // A bounded stream ending therefore needs the canonical state as a fallback.
-  const canonical = !done && executionId ? await client.getExecution(executionId) : undefined;
+  let canonical: Awaited<ReturnType<ManagedClient["getExecution"]>> | undefined;
+  if (!done && executionId) {
+    try {
+      canonical = await client.getExecution(executionId);
+    } catch {
+      // Retain the known execution and cursor if the status read is unavailable.
+    }
+  }
   const canonicalStatus = canonical && ["completed", "failed", "cancelled"].includes(canonical.status) ? canonical.status : undefined;
   const status = done?.data.status ?? canonicalStatus ?? (executionId ? "running" : "unknown");
   const canonicalAssets = canonical?.image_job?.finished_assets;
   const canonicalAsset = Array.isArray(canonicalAssets) && canonicalAssets.length === 1 ? canonicalAssets[0] : undefined;
 
   if (status === "failed" && executionId) {
-    const terminal = terminalExecutionError(canonical ?? await client.getExecution(executionId));
-    if (terminal) throw terminal;
+    try {
+      const terminal = terminalExecutionError(canonical ?? await client.getExecution(executionId));
+      if (terminal) throw terminal;
+    } catch (error) {
+      if (error !== null && typeof error === "object") {
+        (error as { partialOutcome?: { execution_id: string } }).partialOutcome = { execution_id: executionId };
+      }
+      throw error;
+    }
   }
 
   return ok({
