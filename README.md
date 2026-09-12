@@ -100,3 +100,5 @@ Eligible accounts can create walk, run, or idle sprite bundles. Request an integ
 Call `dreamlayer_upload_image`, then `dreamlayer_generate` with `operation: "sprite_sheet"`, the uploaded `input_asset_id`, `options: {action: "walk", frame_count: 12}`, and `max_credits` set to your approved limit.
 
 Each tool call waits for a bounded interval. If the result remains active, pass its `execution_id` and `last_event_id` to `dreamlayer_events`. When completed, use `dreamlayer_download` with `execution_id` and an absolute `path` ending in `.zip`. Existing files are never overwritten.
+
+For affordability, compare the complete rounded quote in **credits** with `available`. One tenth of a credit is $0.017. Promotional and purchased amounts are displayed rounded down separately, so their displayed sum can be 0.1 credit below `available`; stored fractions are preserved. Compare against the combined total, not that sum. The order charge rounds only once, never per frame or per tier.

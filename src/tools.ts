@@ -318,7 +318,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_balance",
     description:
-      "Read promotional, purchased, and total credits owned by this API key. Calls no provider and spends nothing.",
+      "Read promotional, purchased, and total credits owned by this API key. Compare the rounded order quote in credits against available for affordability. Funding buckets are rounded down separately and can sum to 0.1 credit less than available; stored fractions are preserved. Calls no provider and spends nothing.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
