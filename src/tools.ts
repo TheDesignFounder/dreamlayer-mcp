@@ -337,7 +337,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_generate",
     description:
-      "Generate or edit an image and return the resulting event stream. May end asking the user a question instead of producing an image; that is not a failure. Image operations cost one credit. Sprite jobs return a ZIP; read capabilities for the price and supply max_credits.",
+      "Generate or edit an image and return the resulting event stream. May end asking the user a question instead of producing an image; that is not a failure. Image operations cost one credit. Sprite jobs accept 7–100 frames and return a ZIP. Read sprite_pricing in capabilities and approve the total rounded upward to one decimal credit with max_credits. Sprite jobs have no customer cancellation; failed or expired jobs restore the hold.",
     inputSchema: {
       type: "object",
       properties: {
@@ -353,8 +353,8 @@ export const TOOL_DEFINITIONS = [
           type: "string",
           description: "From dreamlayer_upload_image. Required for every operation except text_to_image.",
         },
-        options: { type: "object", properties: { action: { type: "string", enum: ["walk", "run", "idle"] } }, required: ["action"], additionalProperties: false },
-        max_credits: { type: "integer", minimum: 1, maximum: 100 },
+        options: { type: "object", properties: { action: { type: "string", enum: ["walk", "run", "idle"] }, frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12 } }, required: ["action"], additionalProperties: false },
+        max_credits: { type: "number", minimum: 0.1, maximum: 100 },
         aspect_ratio: { type: "string", description: "One of 1:1, 16:9, 9:16, 4:3, 3:4." },
         // This enum is the COMPILED default. tools/list replaces it with whatever
         // /v1/capabilities advertises, so a model never sees an operation this server
@@ -409,16 +409,7 @@ export const TOOL_DEFINITIONS = [
     description: "Save the finished asset of an owned execution to a new local file. Sprite jobs return a ZIP.",
     inputSchema: { type: "object", properties: { execution_id: { type: "string" }, path: { type: "string", description: "Absolute destination path; an existing file is never overwritten." } }, required: ["execution_id", "path"], additionalProperties: false },
   },
-  {
-    name: "dreamlayer_cancel",
-    description: "Request cancellation of an execution before it dispatches.",
-    inputSchema: {
-      type: "object",
-      properties: { execution_id: { type: "string", minLength: 1 } },
-      required: ["execution_id"],
-      additionalProperties: false,
-    },
-  },
+
 ] as const;
 
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
@@ -577,8 +568,6 @@ export async function callTool(
         await writeFile(target, bytes, { flag: "wx" });
         return ok({ path: target, bytes: bytes.length });
       }
-      case "dreamlayer_cancel":
-        return ok(await client.cancel(String(args.execution_id)));
 
       default:
         throw new ToolInputError("Unknown DreamLayer tool.");

@@ -50,7 +50,6 @@ starts at zero credits, and each finished image costs one.
 | `dreamlayer_generate` | Generate or edit. Returns the event stream. |
 | `dreamlayer_execution` | Read canonical state for one execution. |
 | `dreamlayer_events` | Resume a stream after a drop, from a last event id. |
-| `dreamlayer_cancel` | Cancel before dispatch. |
 
 ## Operations
 
@@ -96,8 +95,8 @@ MIT. See LICENSE and NOTICE.
 
 ## Sprite-sheet beta
 
-Eligible accounts can create walk, run, or idle sprite bundles. Check `sprite_sheet` in capabilities and the returned `sprite_sheet_credits` price before starting. A bundle includes twelve transparent frame PNGs, a 2048 by 1536 sheet, atlas, preview, and import instructions. Jobs may take several minutes. Keep the execution ID to resume status or cancel.
+Eligible accounts can create walk, run, or idle sprite bundles. Request an integer `frame_count` from 7 to 100 (default 12). Frames 1–14 cost $0.14 each; additional frames cost $0.07 each. One credit is $0.17. The total request charge rounds up to one decimal credit; displayed balances round down without changing stored funds. Check `sprite_pricing` in capabilities and approve the total with `max_credits`. A bundle includes transparent frames, sheet, atlas, preview, and import instructions. Large requests may contain a sequence rather than one seamless loop; the atlas identifies the sampling mode. Insufficient distinct frames fail without padding or interpolation. Jobs may take several minutes. Hold credits at admission, charge after complete delivery, and restore the hold if generation fails or times out. Sprite requests have no customer cancellation. Keep the execution ID to resume status.
 
-Call `dreamlayer_upload_image`, then `dreamlayer_generate` with `operation: "sprite_sheet"`, the uploaded `input_asset_id`, `options: {action: "walk"}`, and `max_credits` set to your approved limit.
+Call `dreamlayer_upload_image`, then `dreamlayer_generate` with `operation: "sprite_sheet"`, the uploaded `input_asset_id`, `options: {action: "walk", frame_count: 12}`, and `max_credits` set to your approved limit.
 
 Each tool call waits for a bounded interval. If the result remains active, pass its `execution_id` and `last_event_id` to `dreamlayer_events`. When completed, use `dreamlayer_download` with `execution_id` and an absolute `path` ending in `.zip`. Existing files are never overwritten.

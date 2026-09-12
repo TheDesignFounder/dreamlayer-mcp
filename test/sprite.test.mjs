@@ -64,3 +64,22 @@ test('canonical status body has a ten second read bound', async()=>{
   assert.ok(Date.now()-started<20_000);
  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
 });
+
+for(const [count,credits] of [[7,5.8],[14,11.6],[15,12],[99,46.6],[100,47],[6,0],[101,0]]){
+ test(`MCP validates ${count} frames and fractional credit limits before dispatch`,async()=>{
+  let received=[];
+  const server=http.createServer((req,res)=>{
+   let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
+    received.push(JSON.parse(raw));res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.end(`id: 1\nevent: started\ndata: ${JSON.stringify({execution_id:eid,conversation_id:eid})}\n\nid: 2\nevent: done\ndata: {"status":"completed"}\n\n`);
+   });
+  });
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  try{
+   const client=new ManagedClient('dlr_live_fixture',`http://127.0.0.1:${server.address().port}`);
+   const result=await callTool(client,'dreamlayer_generate',{operation:'sprite_sheet',input_asset_id:eid,options:{action:'walk',frame_count:count},max_credits:credits||100});
+   if(count<7||count>100){assert.ok(result.isError);assert.equal(received.length,0);}
+   else {assert.ok(!result.isError,JSON.stringify(result));assert.equal(received.length,1);assert.equal(received[0].options.frame_count,count);assert.equal(received[0].max_credits,credits);}
+  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+ });
+}

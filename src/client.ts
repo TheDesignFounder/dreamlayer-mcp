@@ -71,9 +71,22 @@ export type ManagedExecuteInput = {
   aspect_ratio?: string;
   /** Requires the gateway build that added it. See ManagedOperation. */
   operation?: ManagedOperation;
-  options?: { action: "walk" | "run" | "idle" };
+  options?: { action: "walk" | "run" | "idle"; frame_count?: number };
   max_credits?: number;
 };
+
+export function spriteCreditPrice(frameCount: number): number {
+  if (!Number.isInteger(frameCount) || frameCount < 7 || frameCount > 100) throw new Error("frame_count must be an integer from 7 to 100");
+  const cents = 14 * Math.min(frameCount, 14) + 7 * Math.max(frameCount - 14, 0);
+  return Math.ceil(cents * 10 / 17) / 10;
+}
+
+export function validateSpriteInput(input: ManagedExecuteInput): void {
+  if (input.operation !== "sprite_sheet") return;
+  if (!input.options || !["walk", "run", "idle"].includes(input.options.action)) throw new Error("Sprite requests require options.action");
+  const price = spriteCreditPrice(input.options.frame_count ?? 12);
+  if (typeof input.max_credits !== "number" || !Number.isFinite(input.max_credits) || input.max_credits < price || input.max_credits > 100) throw new Error(`This sprite request requires ${price} credits. Supply a sufficient max_credits limit.`);
+}
 
 export type ManagedInputAsset = {
   input_asset_id: string;
@@ -120,6 +133,7 @@ export const PUBLIC_ERROR_REASONS = [
   "content_refused",
   "temporarily_unavailable",
   "generation_failed",
+  "insufficient_frames",
 ] as const;
 
 export type PublicErrorReason = (typeof PUBLIC_ERROR_REASONS)[number];
@@ -154,6 +168,7 @@ const PUBLIC_ERROR_SPECS: Record<
     message: "The service is temporarily unavailable. Please try again.",
     retryable: true,
   },
+  insufficient_frames: { message: "Not enough distinct animation frames. Try a lower frame count.", retryable: false },
   generation_failed: { message: "Image generation failed.", retryable: false },
 };
 
@@ -191,6 +206,7 @@ function defaultCode(reason: PublicErrorReason): string {
     content_refused: "CONTENT_REFUSED",
     temporarily_unavailable: "SERVICE_UNAVAILABLE",
     generation_failed: "INTERNAL_ERROR",
+    insufficient_frames: "INSUFFICIENT_FRAMES",
   };
   return codes[reason];
 }
@@ -209,6 +225,7 @@ function statusForReason(reason: PublicErrorReason): number {
     content_refused: 422,
     temporarily_unavailable: 503,
     generation_failed: 500,
+    insufficient_frames: 422,
   };
   return statuses[reason];
 }
@@ -417,16 +434,18 @@ export function managedBalance(value: unknown): ManagedBalance {
     throw new Error("Invalid DreamLayer balance response");
   }
   for (const field of ["promotional", "purchased", "available"] as const) {
-    if (!Number.isSafeInteger(value[field]) || Number(value[field]) < 0) {
+    if (typeof value[field] !== "number" || !Number.isFinite(value[field]) || Number(value[field]) < 0 || Number(value[field]) > Number.MAX_SAFE_INTEGER / 10) {
       throw new Error("Invalid DreamLayer balance response");
     }
   }
   if (
     value.credit_usd !== "0.17" ||
-    Number(value.available) !== Number(value.promotional) + Number(value.purchased)
+    Math.round(Number(value.available) * 10) < Math.round(Number(value.promotional) * 10) + Math.round(Number(value.purchased) * 10) ||
+    Math.round(Number(value.available) * 10) > Math.round(Number(value.promotional) * 10) + Math.round(Number(value.purchased) * 10) + 1
   ) {
     throw new Error("Invalid DreamLayer balance response");
   }
+  if ([value.promotional, value.purchased, value.available].some(v => Math.abs(Number(v) * 10 - Math.round(Number(v) * 10)) > 1e-7)) throw new Error("Invalid DreamLayer balance response");
   return {
     promotional: Number(value.promotional),
     purchased: Number(value.purchased),
@@ -646,6 +665,7 @@ export class ManagedClient {
     input: ManagedExecuteInput,
     options: { idempotencyKey: string },
   ): AsyncGenerator<ManagedEvent> {
+    validateSpriteInput(input);
     const stream = await this.fetchStream("/v1/execute", {
       method: "POST",
       headers: {
