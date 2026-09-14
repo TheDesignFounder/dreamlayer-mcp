@@ -71,7 +71,7 @@ export type ManagedExecuteInput = {
   aspect_ratio?: string;
   /** Requires the gateway build that added it. See ManagedOperation. */
   operation?: ManagedOperation;
-  options?: { action: "walk" | "run" | "idle"; frame_count?: number };
+  options?: { action?: "walk" | "run" | "idle"; animation_prompt?: string; animation_mode?: "loop" | "once"; frame_count?: number; frame_size?: 32 | 64 | 128 | 256 | 512 | 720 | 1080 };
   max_credits?: number;
 };
 
@@ -83,8 +83,13 @@ export function spriteCreditPrice(frameCount: number): number {
 
 export function validateSpriteInput(input: ManagedExecuteInput): void {
   if (input.operation !== "sprite_sheet") return;
-  if (!input.options || !["walk", "run", "idle"].includes(input.options.action)) throw new Error("Sprite requests require options.action");
-  const price = spriteCreditPrice(input.options.frame_count ?? 12);
+  const options = input.options;
+  if (!options || (options.action === undefined) === (options.animation_prompt === undefined)) throw new Error("Sprite requests require exactly one of options.action or options.animation_prompt");
+  if (options.action !== undefined && !["walk", "run", "idle"].includes(options.action)) throw new Error("Invalid sprite preset");
+  if (options.animation_prompt !== undefined && (typeof options.animation_prompt !== "string" || !options.animation_prompt.trim() || [...options.animation_prompt].length > 4000)) throw new Error("animation_prompt must contain 1–4000 characters");
+  if (options.animation_mode !== undefined && !["loop", "once"].includes(options.animation_mode)) throw new Error("animation_mode must be loop or once");
+  const price = spriteCreditPrice(options.frame_count ?? 12);
+  if (options.frame_size !== undefined && ![32, 64, 128, 256, 512, 720, 1080].includes(options.frame_size)) throw new Error("frame_size must be 32, 64, 128, 256, 512, 720 or 1080");
   if (typeof input.max_credits !== "number" || !Number.isFinite(input.max_credits) || input.max_credits < price || input.max_credits > 100) throw new Error(`This sprite request requires ${price} credits. Supply a sufficient max_credits limit.`);
 }
 

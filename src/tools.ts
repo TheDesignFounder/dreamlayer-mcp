@@ -353,7 +353,19 @@ export const TOOL_DEFINITIONS = [
           type: "string",
           description: "From dreamlayer_upload_image. Required for every operation except text_to_image.",
         },
-        options: { type: "object", properties: { action: { type: "string", enum: ["walk", "run", "idle"] }, frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12 } }, required: ["action"], additionalProperties: false },
+        options: {
+          type: "object",
+          description: "Sprites: supply exactly one of action (legacy preset) or animation_prompt (any subject/action, including turntables). animation_mode defaults to loop for presets, once for custom prompts. Broad requests do not guarantee quality; partial transparency depends on background removal.",
+          properties: {
+            action: { type: "string", enum: ["walk", "run", "idle"] },
+            animation_prompt: { type: "string", minLength: 1, maxLength: 4000 },
+            animation_mode: { type: "string", enum: ["loop", "once"] },
+            frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12 },
+            frame_size: { type: "integer", enum: [32, 64, 128, 256, 512, 720, 1080], default: 512, description: "Square export canvas, not source detail. Larger exports may be enlarged. Pricing depends only on frame count." },
+          },
+          oneOf: [{ required: ["action"] }, { required: ["animation_prompt"] }],
+          additionalProperties: false,
+        },
         max_credits: { type: "number", minimum: 0.1, maximum: 100 },
         aspect_ratio: { type: "string", description: "One of 1:1, 16:9, 9:16, 4:3, 3:4." },
         // This enum is the COMPILED default. tools/list replaces it with whatever

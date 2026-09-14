@@ -65,6 +65,20 @@ test('canonical status body has a ten second read bound', async()=>{
  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
 });
 
+for (const size of [32,64,128,256,512,720,1080,33]) {
+ test(`MCP custom animation and ${size}px export validation`,async()=>{
+  const received=[];
+  const server=http.createServer((req,res)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{received.push(JSON.parse(raw));res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('event: done\ndata: {"status":"completed"}\n\n');});});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  try {
+   const client=new ManagedClient('dlr_live_fixture',`http://127.0.0.1:${server.address().port}`);
+   const options={animation_prompt:'Rotate a coin through 360 degrees',animation_mode:'loop',frame_count:7,frame_size:size};
+   const result=await callTool(client,'dreamlayer_generate',{operation:'sprite_sheet',input_asset_id:eid,options,max_credits:5.8});
+   if(size===33){assert.ok(result.isError);assert.equal(received.length,0);}
+   else {assert.ok(!result.isError,JSON.stringify(result));assert.deepEqual(received[0].options,options);}
+  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+ });
+}
 for(const [count,credits] of [[7,5.8],[14,11.6],[15,12],[99,46.6],[100,47],[6,0],[101,0]]){
  test(`MCP validates ${count} frames and fractional credit limits before dispatch`,async()=>{
   let received=[];
