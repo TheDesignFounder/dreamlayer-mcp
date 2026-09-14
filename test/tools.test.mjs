@@ -183,15 +183,47 @@ function callTool(apiUrl, name, args, extraEnv = {}) {
     });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => {
+    let pending = "";
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       child.kill();
-      reject(new Error(`timed out. stderr: ${stderr}`));
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timer = setTimeout(() => {
+      finish(new Error(`timed out. stdout: ${stdout} stderr: ${stderr}`));
     }, 12_000);
-
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.stderr.on("data", (c) => (stderr += c.toString()));
-
     const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+    child.on("error", (error) => finish(error));
+    child.on("close", () => {
+      if (!settled) finish(new Error(`server exited without a tools/call reply. stderr: ${stderr}`));
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      pending += chunk.toString();
+      for (;;) {
+        const newline = pending.indexOf("\n");
+        if (newline < 0) break;
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (!line.trim()) continue;
+        try {
+          const reply = JSON.parse(line);
+          if (reply.id === 1) {
+            if (reply.error) throw new Error(JSON.stringify(reply.error));
+            send({ jsonrpc: "2.0", method: "notifications/initialized" });
+            send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } });
+          } else if (reply.id === 2) {
+            if (reply.error) throw new Error(JSON.stringify(reply.error));
+            finish(null, { reply, payload: JSON.parse(reply.result.content[0].text) });
+          }
+        } catch (error) { finish(error); }
+      }
+    });
     send({
       jsonrpc: "2.0",
       id: 1,
@@ -202,26 +234,6 @@ function callTool(apiUrl, name, args, extraEnv = {}) {
         clientInfo: { name: "t", version: "0" },
       },
     });
-    send({ jsonrpc: "2.0", method: "notifications/initialized" });
-
-    setTimeout(() => {
-      send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } });
-    }, 300);
-
-    setTimeout(() => {
-      clearTimeout(timer);
-      child.kill();
-      const reply = stdout
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line))
-        .find((m) => m.id === 2);
-      if (!reply) {
-        reject(new Error(`no tools/call reply. stdout: ${stdout} stderr: ${stderr}`));
-        return;
-      }
-      resolve({ reply, payload: JSON.parse(reply.result.content[0].text) });
-    }, 2200);
   });
 }
 
@@ -423,14 +435,15 @@ test("dreamlayer_upload_image sends camera RAW through staged server normalizati
   const source = path.join(directory, "camera.dng");
   await writeFile(source, Buffer.from("89504e470d0a1a0a", "hex"));
 
-  const { payload } = await callTool(api.url, "dreamlayer_upload_image", { path: source });
-  const calls = api.calls.map((call) => `${call.method} ${call.url}`);
-  api.close();
+  try {
+    const { payload } = await callTool(api.url, "dreamlayer_upload_image", { path: source });
+    const calls = api.calls.map((call) => `${call.method} ${call.url}`);
 
-  assert.equal(payload.input_asset_id, "11111111-1111-4111-8111-111111111111");
-  assert.ok(calls.includes("POST /v1/input-assets/uploads"));
-  assert.ok(calls.some((value) => /PUT \/v1\/input-assets\/uploads\/[^/]+\/raw/.test(value)));
-  assert.ok(calls.some((value) => /POST \/v1\/input-assets\/uploads\/[^/]+\/finalize/.test(value)));
+    assert.equal(payload.input_asset_id, "11111111-1111-4111-8111-111111111111");
+    assert.ok(calls.includes("POST /v1/input-assets/uploads"));
+    assert.ok(calls.some((value) => /PUT \/v1\/input-assets\/uploads\/[^/]+\/raw/.test(value)));
+    assert.ok(calls.some((value) => /POST \/v1\/input-assets\/uploads\/[^/]+\/finalize/.test(value)));
+  } finally { api.close(); }
 });
 
 test("a 200 MB upload receives a size-scaled deadline", async () => {

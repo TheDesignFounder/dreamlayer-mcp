@@ -183,9 +183,9 @@ test("completes an MCP initialize and lists its tools over stdio", async () => {
   const names = list.result.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
     "dreamlayer_balance",
-    "dreamlayer_cancel",
     "dreamlayer_capabilities",
-    "dreamlayer_events",
+    "dreamlayer_download",
+      "dreamlayer_events",
     "dreamlayer_execution",
     "dreamlayer_generate",
     "dreamlayer_upload_image",

@@ -50,7 +50,6 @@ starts at zero credits, and each finished image costs one.
 | `dreamlayer_generate` | Generate or edit. Returns the event stream. |
 | `dreamlayer_execution` | Read canonical state for one execution. |
 | `dreamlayer_events` | Resume a stream after a drop, from a last event id. |
-| `dreamlayer_cancel` | Cancel before dispatch. |
 
 ## Operations
 
@@ -93,3 +92,17 @@ Node.js 22.12 or later.
 ## License
 
 MIT. See LICENSE and NOTICE.
+
+## Sprite-sheet beta
+
+Sprite requests accept exactly one of `options.animation_prompt` (1–4000 characters) or an `options.action` preset (`walk`, `run`, `idle`). Custom prompts can describe characters, creatures, objects, effects or 360° turntables. `animation_mode` is `loop` or `once`; presets default to loop, custom prompts to once. For a turntable, request a stationary camera and rotating subject. Broad requests do not guarantee correct motion, unseen details or successful effect transparency.
+
+Request integer `frame_count` 7–100 (default 12) and `frame_size` 32, 64, 128, 256, 512, 720 or 1080 (default 512). These are square export canvases; a larger export does not guarantee additional detail. Aspect ratio and shared alignment are preserved with transparent padding. A bundle contains transparent PNG frames, sheet, atlas, preview and import instructions, including each frame's playback duration. Choose a repeating loop or a one-time action with a beginning and ending. If the requested number of distinct frames cannot be delivered, the job fails and held credits are returned. Translucent effects can lose detail or fail; small exports are not automatically pixel art.
+
+Pricing is unchanged across sizes: frames 1–14 cost $0.14 each; additional frames $0.07 each. One credit is $0.17. Round the complete order upward once to a tenth of a credit. Check `sprite_pricing` in capabilities and approve the quote with `max_credits`. Credits are held during processing, settled after complete delivery and restored on failure/timeout. There is no customer cancellation. Keep the execution ID to resume status. Custom requests need the matching broad-animation server release; older servers reject them. New live generation quality, 100-frame duration and actual cost remain unverified.
+
+Call `dreamlayer_upload_image`, then `dreamlayer_generate` with `operation: "sprite_sheet"`, the uploaded `input_asset_id`, `options: {action: "walk", frame_count: 12}`, and `max_credits` set to your approved limit.
+
+Each tool call waits for a bounded interval. If the result remains active, pass its `execution_id` and `last_event_id` to `dreamlayer_events`. When completed, use `dreamlayer_download` with `execution_id` and an absolute `path` ending in `.zip`. Existing files are never overwritten.
+
+For affordability, compare the complete rounded quote in **credits** with `available`. One tenth of a credit is $0.017. Promotional and purchased amounts are displayed rounded down separately, so their displayed sum can be 0.1 credit below `available`; stored fractions are preserved. Compare against the combined total, not that sum. The order charge rounds only once, never per frame or per tier.

@@ -8,7 +8,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { openAsBlob } from "node:fs";
-import { stat } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { KNOWN_OPERATIONS } from "./client.js";
@@ -249,7 +249,7 @@ export async function resolveOperations(client: ManagedClient): Promise<string[]
   const fallBack = (reason: string): string[] => {
     // stderr only; stdout carries JSON-RPC and nothing else.
     process.stderr.write(`dreamlayer-mcp: ${reason}, using built-in operation list\n`);
-    cache = { operations: [...COMPILED_OPERATIONS], expiresAt: Date.now() + NEGATIVE_TTL_MS };
+    cache = { operations: COMPILED_OPERATIONS.filter((op) => op !== "sprite_sheet"), expiresAt: Date.now() + NEGATIVE_TTL_MS };
     return cache.operations;
   };
 
@@ -318,7 +318,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_balance",
     description:
-      "Read promotional, purchased, and total credits owned by this API key. Calls no provider and spends nothing.",
+      "Read promotional, purchased, and total credits owned by this API key. Compare the rounded order quote in credits against available for affordability. Funding buckets are rounded down separately and can sum to 0.1 credit less than available; stored fractions are preserved. Calls no provider and spends nothing.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -337,7 +337,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_generate",
     description:
-      "Generate or edit an image and return the resulting event stream. May end asking the user a question instead of producing an image; that is not a failure. Costs one credit per finished image.",
+      "Generate or edit an image and return the resulting event stream. May end asking the user a question instead of producing an image; that is not a failure. Image operations cost one credit. Sprite jobs accept 7–100 frames and return a ZIP. Read sprite_pricing in capabilities and approve the total rounded upward to one decimal credit with max_credits. Sprite jobs have no customer cancellation; failed or expired jobs restore the hold.",
     inputSchema: {
       type: "object",
       properties: {
@@ -353,6 +353,20 @@ export const TOOL_DEFINITIONS = [
           type: "string",
           description: "From dreamlayer_upload_image. Required for every operation except text_to_image.",
         },
+        options: {
+          type: "object",
+          description: "Sprites: supply exactly one of action (legacy preset) or animation_prompt (any subject/action, including turntables). animation_mode defaults to loop for presets, once for custom prompts. Broad requests do not guarantee quality; partial transparency depends on background removal.",
+          properties: {
+            action: { type: "string", enum: ["walk", "run", "idle"] },
+            animation_prompt: { type: "string", minLength: 1, maxLength: 4000 },
+            animation_mode: { type: "string", enum: ["loop", "once"] },
+            frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12 },
+            frame_size: { type: "integer", enum: [32, 64, 128, 256, 512, 720, 1080], default: 512, description: "Square export canvas, not source detail. Larger exports may be enlarged. Pricing depends only on frame count." },
+          },
+          oneOf: [{ required: ["action"] }, { required: ["animation_prompt"] }],
+          additionalProperties: false,
+        },
+        max_credits: { type: "number", minimum: 0.1, maximum: 100 },
         aspect_ratio: { type: "string", description: "One of 1:1, 16:9, 9:16, 4:3, 3:4." },
         // This enum is the COMPILED default. tools/list replaces it with whatever
         // /v1/capabilities advertises, so a model never sees an operation this server
@@ -403,15 +417,11 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
-    name: "dreamlayer_cancel",
-    description: "Request cancellation of an execution before it dispatches.",
-    inputSchema: {
-      type: "object",
-      properties: { execution_id: { type: "string", minLength: 1 } },
-      required: ["execution_id"],
-      additionalProperties: false,
-    },
+    name: "dreamlayer_download",
+    description: "Save the finished asset of an owned execution to a new local file. Sprite jobs return a ZIP.",
+    inputSchema: { type: "object", properties: { execution_id: { type: "string" }, path: { type: "string", description: "Absolute destination path; an existing file is never overwritten." } }, required: ["execution_id", "path"], additionalProperties: false },
   },
+
 ] as const;
 
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
@@ -427,6 +437,7 @@ async function collect(
   client: ManagedClient,
   stream: AsyncGenerator<ManagedEvent>,
   executionIdHint?: string,
+  cursorHint?: string,
 ): Promise<ToolResult> {
   const events: ManagedEvent[] = [];
   let truncated = false;
@@ -446,7 +457,7 @@ async function collect(
     const begun = events.find((event) => event.event === "started");
     if (error !== null && typeof error === "object") {
       (error as { partialOutcome?: { execution_id: unknown } }).partialOutcome = {
-        execution_id: begun?.data.execution_id ?? null,
+        execution_id: begun?.data.execution_id ?? executionIdHint ?? null,
       };
     }
     throw error;
@@ -457,22 +468,44 @@ async function collect(
   const question = events.find((event) => event.event === "question");
   const executionId = String(started?.data.execution_id ?? executionIdHint ?? "");
 
-  if (done?.data.status === "failed" && executionId) {
-    const terminal = terminalExecutionError(await client.getExecution(executionId));
-    if (terminal) throw terminal;
+  // A worker can commit terminal state before its final event is persisted.
+  // A bounded stream ending therefore needs the canonical state as a fallback.
+  let canonical: Awaited<ReturnType<ManagedClient["getExecution"]>> | undefined;
+  if (!done && executionId) {
+    try {
+      canonical = await client.getExecution(executionId);
+    } catch {
+      // Retain the known execution and cursor if the status read is unavailable.
+    }
+  }
+  const canonicalStatus = canonical && ["completed", "failed", "cancelled"].includes(canonical.status) ? canonical.status : undefined;
+  const status = done?.data.status ?? canonicalStatus ?? (executionId ? "running" : "unknown");
+  const canonicalAssets = canonical?.image_job?.finished_assets;
+  const canonicalAsset = Array.isArray(canonicalAssets) && canonicalAssets.length === 1 ? canonicalAssets[0] : undefined;
+
+  if (status === "failed" && executionId) {
+    try {
+      const terminal = terminalExecutionError(canonical ?? await client.getExecution(executionId));
+      if (terminal) throw terminal;
+    } catch (error) {
+      if (error !== null && typeof error === "object") {
+        (error as { partialOutcome?: { execution_id: string } }).partialOutcome = { execution_id: executionId };
+      }
+      throw error;
+    }
   }
 
   return ok({
     execution_id: executionId || null,
     conversation_id: started?.data.conversation_id ?? null,
-    status: done?.data.status ?? (truncated ? "running" : "unknown"),
-    asset: asset ? { asset_id: asset.data.asset_id, download_url: asset.data.download_url } : null,
+    status,
+    asset: asset ? { asset_id: asset.data.asset_id, download_url: asset.data.download_url } : canonicalAsset ? {asset_id: canonicalAsset.asset_id, download_url: canonicalAsset.download_url} : null,
     question: question ? { question_id: question.data.question_id, text: question.data.text } : null,
     truncated,
-    ...(truncated
+    ...(!done && !canonicalStatus && executionId
       ? { next_step: "Call dreamlayer_events with this execution_id and the last id below." }
       : {}),
-    last_event_id: events.length > 0 ? events[events.length - 1]?.id ?? null : null,
+    last_event_id: events.length > 0 ? events[events.length - 1]?.id ?? cursorHint ?? null : cursorHint ?? null,
     events,
   });
 }
@@ -534,10 +567,19 @@ export async function callTool(
             typeof args.last_event_id === "string" ? args.last_event_id : undefined,
           ),
           String(args.execution_id),
+          typeof args.last_event_id === "string" ? args.last_event_id : undefined,
         );
 
-      case "dreamlayer_cancel":
-        return ok(await client.cancel(String(args.execution_id)));
+      case "dreamlayer_download": {
+        const target = String(args.path ?? "");
+        if (!path.isAbsolute(target)) throw new ToolInputError("The destination must be an absolute path.");
+        const state = await client.getExecution(String(args.execution_id));
+        const assets = state.image_job?.finished_assets;
+        if (state.status !== "completed" || !Array.isArray(assets) || assets.length !== 1 || typeof assets[0]?.download_url !== "string") throw new ToolInputError("This execution has no finished asset yet.");
+        const bytes = await client.download(assets[0].download_url);
+        await writeFile(target, bytes, { flag: "wx" });
+        return ok({ path: target, bytes: bytes.length });
+      }
 
       default:
         throw new ToolInputError("Unknown DreamLayer tool.");
