@@ -106,3 +106,23 @@ Call `dreamlayer_upload_image`, then `dreamlayer_generate` with `operation: "spr
 Each tool call waits for a bounded interval. If the result remains active, pass its `execution_id` and `last_event_id` to `dreamlayer_events`. When completed, use `dreamlayer_download` with `execution_id` and an absolute `path` ending in `.zip`. Existing files are never overwritten.
 
 For affordability, compare the complete rounded quote in **credits** with `available`. One tenth of a credit is $0.017. Promotional and purchased amounts are displayed rounded down separately, so their displayed sum can be 0.1 credit below `available`; stored fractions are preserved. Compare against the combined total, not that sum. The order charge rounds only once, never per frame or per tier.
+
+## Tool discovery and recovery
+
+Read `tools/list` for descriptions, input schemas, and operation availability. Read-only
+calls are marked with `readOnlyHint`; upload, generation, and local download are not.
+These annotations describe effects, not permission grants. Generation starts paid work.
+
+Every tool returns `structuredContent` plus the same JSON serialized in a text block for
+older clients. Failures set `isError: true`. Generation results and errors include the
+idempotency key, including when the server generated it for you. Choose and save your own
+key before calling when you need recovery even after the MCP process itself is lost.
+
+After interruption, call `dreamlayer_execution` with the saved execution ID, then
+`dreamlayer_events` with the last processed event ID. Retrieve completed work with
+`dreamlayer_download`. Never start a replacement generation merely because the stream
+closed. Keep the same uploaded asset ID and identical arguments when replaying a key.
+
+[Full tool reference](https://docs.dreamlayer.io/mcp/tools) ·
+[Request limits](https://docs.dreamlayer.io/agent-api/limits) ·
+[Runnable API examples](https://docs.dreamlayer.io/agent-api/examples)
