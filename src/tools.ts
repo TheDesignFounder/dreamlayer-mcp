@@ -23,6 +23,7 @@ import {
 export type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+  structuredContent?: Record<string, unknown>;
 };
 
 /** Cap what one call returns so a long run cannot flood a client's context. */
@@ -104,7 +105,7 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
                 request_id: null,
                 execution_id: executionId,
                 guidance: executionId
-                  ? "The job may still be running. Poll dreamlayer_status with this " +
+                  ? "The job may still be running. Call dreamlayer_execution with this " +
                     "execution_id before retrying, or retry with the SAME idempotency_key " +
                     "so it cannot be charged twice."
                   : "Retry with the same idempotency_key so it cannot be charged twice.",
@@ -284,18 +285,33 @@ export function resetOperationCache(): void {
 
 /** Exactly the shape `tools/list` returns; deliberately looser than TOOL_DEFINITIONS,
  *  whose readonly tuple type cannot survive a map(). */
-export type ListedTool = { name: string; description: string; inputSchema: unknown };
+export type ListedTool = { name: string; description: string; inputSchema: unknown; outputSchema: Record<string, unknown>; annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean } };
 
 /** The tool list with `operation` narrowed to what this server actually accepts. */
 export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedTool[]> {
   const operations = await resolveOperations(client);
   return TOOL_DEFINITIONS.map((tool): ListedTool => {
+    const shapes: Record<string, Record<string, unknown>> = {
+      dreamlayer_capabilities: { api_version: { type: "string" }, operations: { type: "array", items: { type: "string" } } },
+      dreamlayer_balance: { available: { type: "number" }, purchased: { type: "number" }, promotional: { type: "number" }, credit_usd: { type: "string" } },
+      dreamlayer_upload_image: { input_asset_id: { type: "string" }, expires_at: { type: "string" } },
+      dreamlayer_execution: { execution_id: { type: "string" }, status: { type: "string" }, image_job: { type: ["object", "null"] } },
+      dreamlayer_download: { path: { type: "string" }, bytes: { type: "number" } },
+    };
+    const outputSchema = { type: "object", properties: {
+      ...(shapes[tool.name] ?? { execution_id: { type: ["string", "null"] }, status: { type: "string" }, last_event_id: { type: ["string", "null"] }, asset: { type: ["object", "null"] }, question: { type: ["object", "null"] }, events: { type: "array", items: { type: "object" } } }),
+      error: { type: "object", properties: { reason: { type: "string" }, retryable: { type: "boolean" }, request_id: { type: ["string", "null"] }, execution_id: { type: ["string", "null"] }, idempotency_key: { type: "string" } }, required: ["reason", "retryable"] },
+    }, additionalProperties: true };
+    const readOnly = ["dreamlayer_capabilities", "dreamlayer_balance", "dreamlayer_execution", "dreamlayer_events"].includes(tool.name);
+    const annotations = { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: readOnly, openWorldHint: true };
     const property = (tool.inputSchema.properties as Record<string, unknown>).operation as
       | { enum?: unknown }
       | undefined;
-    if (!property) return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema };
+    if (!property) return { ...tool, annotations, outputSchema };
     return {
       name: tool.name,
+      annotations,
+      outputSchema,
       description: tool.description,
       inputSchema: {
         ...tool.inputSchema,
@@ -324,7 +340,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_upload_image",
     description:
-      "Upload one local image for use as a reference. Returns an input_asset_id to pass to dreamlayer_generate.",
+      "Upload one local image for use as a reference. Returns an input_asset_id to pass to dreamlayer_generate. Uploads the selected file to the hosted API; starts no paid generation. Reuse the returned asset ID when retrying the same request.",
     inputSchema: {
       type: "object",
       properties: {
@@ -337,7 +353,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_generate",
     description:
-      "Generate or edit an image and return the resulting event stream. May end asking the user a question instead of producing an image; that is not a failure. Image operations cost one credit. Sprite jobs accept 7–100 frames and return a ZIP. Read sprite_pricing in capabilities and approve the total rounded upward to one decimal credit with max_credits. Sprite jobs have no customer cancellation; failed or expired jobs restore the hold.",
+      "Generate an image from text, edit one reference, remove its background, upscale it, or create a sprite sheet. This starts paid work; obtain the user’s approval for the operation first. Returns execution_id, status, asset, question, and last_event_id. May end asking the user a question instead of producing an image; that is not a failure. Image operations cost one credit. Sprite jobs accept 7–100 frames and return a ZIP. Read sprite_pricing in capabilities and approve the total rounded upward to one decimal credit with max_credits. Sprite jobs have no customer cancellation; failed or expired jobs restore the hold.",
     inputSchema: {
       type: "object",
       properties: {
@@ -367,7 +383,7 @@ export const TOOL_DEFINITIONS = [
           additionalProperties: false,
         },
         max_credits: { type: "number", minimum: 0.1, maximum: 100 },
-        aspect_ratio: { type: "string", description: "One of 1:1, 16:9, 9:16, 4:3, 3:4." },
+        aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4"] },
         // This enum is the COMPILED default. tools/list replaces it with whatever
         // /v1/capabilities advertises, so a model never sees an operation this server
         // will not run. See resolveOperations.
@@ -386,7 +402,7 @@ export const TOOL_DEFINITIONS = [
           type: "string",
           minLength: 1,
           maxLength: 200,
-          description: "Optional. Generated automatically. Supply the SAME one to retry safely.",
+          description: "Choose and save one key per logical request before calling. Reuse that key AND identical arguments after an uncertain response. If omitted, a generated key is returned for recovery.",
         },
       },
       additionalProperties: false,
@@ -510,11 +526,12 @@ async function collect(
   });
 }
 
-export async function callTool(
+async function callToolInternal(
   client: ManagedClient,
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
+  let recoveryKey: string | undefined;
   try {
     switch (name) {
       case "dreamlayer_capabilities":
@@ -550,10 +567,12 @@ export async function callTool(
         // it required, so a model had to invent one, and an invented key is not a
         // stable key: the retry it is meant to protect would not match.
         const idempotencyKey = typeof supplied === "string" && supplied ? supplied : randomUUID();
-        return await collect(
+        recoveryKey = idempotencyKey;
+        const result = await collect(
           client,
           client.execute(rest as Parameters<ManagedClient["execute"]>[0], { idempotencyKey }),
         );
+        return ok({ ...JSON.parse(result.content[0]!.text), idempotency_key: idempotencyKey });
       }
 
       case "dreamlayer_execution":
@@ -585,6 +604,17 @@ export async function callTool(
         throw new ToolInputError("Unknown DreamLayer tool.");
     }
   } catch (error) {
-    return fail(error, { uploadOnly: name === "dreamlayer_upload_image" });
+    const result = fail(error, { uploadOnly: name === "dreamlayer_upload_image" });
+    const value = JSON.parse(result.content[0]!.text);
+    if (recoveryKey) value.error.idempotency_key = recoveryKey;
+    const partial = (error as { partialOutcome?: { execution_id?: string } } | null)?.partialOutcome;
+    if (partial?.execution_id) value.error.execution_id = partial.execution_id;
+    return { ...ok(value), isError: true };
   }
+}
+
+/** Structured results plus the identical text payload support both new and older clients. */
+export async function callTool(client: ManagedClient, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const result = await callToolInternal(client, name, args);
+  return { ...result, structuredContent: JSON.parse(result.content[0]!.text) as Record<string, unknown> };
 }

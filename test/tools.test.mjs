@@ -722,7 +722,7 @@ test("a dead stream reports the execution id instead of a bare abort", async () 
     "the id arrived in `started` and must survive the abort",
   );
   assert.match(payload.error.guidance, /idempotency_key/, "must warn against paying twice");
-  assert.match(payload.error.guidance, /dreamlayer_status/, "must name the recovery tool");
+  assert.match(payload.error.guidance, /dreamlayer_execution/, "must name the recovery tool");
 });
 
 test("tools/list advertises what the SERVER runs, not what this build was compiled with", async () => {

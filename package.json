@@ -1,6 +1,6 @@
 {
   "name": "@dreamlayer/mcp",
-  "version": "0.4.0-beta.1",
+  "version": "0.4.0-beta.2",
   "description": "Image generation and editing tools for MCP-compatible AI clients, backed by the DreamLayer Agent API.",
   "license": "MIT",
   "type": "module",
@@ -36,7 +36,10 @@
     "model-context-protocol",
     "image-generation",
     "dreamlayer",
-    "ai"
+    "ai",
+    "image-editing",
+    "sprite-sheet",
+    "agents"
   ],
   "repository": {
     "type": "git",
@@ -45,5 +48,6 @@
   "homepage": "https://docs.dreamlayer.io/mcp",
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "mcpName": "io.github.TheDesignFounder/dreamlayer"
 }
