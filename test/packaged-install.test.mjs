@@ -28,7 +28,7 @@ test(
   assert.equal(packed.status, 0, packed.stderr);
   const metadata = JSON.parse(packed.stdout)[0];
   assert.equal(metadata.name, "@dreamlayer/mcp");
-  assert.equal(metadata.version, "0.4.0-beta.2");
+  assert.equal(metadata.version, "0.4.0-beta.3");
   assert.ok(metadata.integrity.startsWith("sha512-"));
   assert.deepEqual(
     metadata.files.map(({ path: file }) => file).sort(),
@@ -64,7 +64,7 @@ test(
     ),
   );
   assert.equal(packageJson.publishConfig.tag, "beta");
-  assert.equal(packageJson.version, "0.4.0-beta.2");
+  assert.equal(packageJson.version, "0.4.0-beta.3");
   assert.equal(packageJson.bin["dreamlayer-mcp"], "dist/index.js");
 
   const env = { ...process.env, DREAMLAYER_API_KEY: "" };

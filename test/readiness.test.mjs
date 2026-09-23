@@ -115,3 +115,45 @@ test('SDK client validates structured successes and errors against discovered ou
     }
   } finally { await client.close(); await server.close(); }
 });
+
+for (const invalid of [
+  'event: progress\ndata: {"text":"ok","private":"DO_NOT_ECHO"}\n\n',
+  'event: progress\ndata: {DO_NOT_ECHO\n\n',
+  'event: unexpected\ndata: {"private":"DO_NOT_ECHO"}\n\n',
+]) {
+  test(`wire contract violation is permanent and retains recovery: ${invalid.split('\n')[0]} ${invalid.length}`, async () => {
+    const {createServer}=await import('node:http');
+    const {ManagedClient}=await import('../dist/client.js');
+    const requests=[];
+    const id='22222222-2222-4222-8222-222222222222';
+    const server=createServer((req,res)=>{
+      requests.push(req.method+' '+req.url);
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.end(`id: first\nevent: started\ndata: ${JSON.stringify({execution_id:id,conversation_id:'33333333-3333-4333-8333-333333333333'})}\n\n`+invalid);
+    });
+    await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+    try {
+      const result=await callTool(new ManagedClient('fake',`http://127.0.0.1:${server.address().port}`),'dreamlayer_generate',{prompt:'a tree',idempotency_key:'saved'});
+      const error=result.structuredContent.error;
+      assert.equal(result.isError,true); assert.equal(error.reason,'response_contract_error');
+      assert.equal(error.retryable,false);assert.equal(error.execution_id,id);assert.equal(error.idempotency_key,'saved');
+      assert.equal(error.last_event_id,'first');assert.doesNotMatch(result.content[0].text,/DO_NOT_ECHO/);
+      assert.deepEqual(requests,['POST /v1/execute']);
+    } finally {await new Promise(resolve=>server.close(resolve));}
+  });
+}
+test('unknown collection failure is not converted into a transient outage',async()=>{
+  const result=await callTool({execute:async function*(){yield {id:'cursor',event:'started',data:{execution_id:'owned'}};throw new Error('private implementation failure');}},'dreamlayer_generate',{prompt:'a tree',idempotency_key:'saved'});
+  assert.equal(result.structuredContent.error.reason,'client_error');
+  assert.equal(result.structuredContent.error.retryable,false);
+  assert.equal(result.structuredContent.error.execution_id,'owned');
+  assert.doesNotMatch(result.content[0].text,/private implementation/);
+});
+
+test('documented failed done event accepts its error object without exposing upstream text', async () => {
+  const {managedEvent}=await import('../dist/client.js');
+  const event=managedEvent('done','last',{status:'failed',error:{reason:'insufficient_credits',message:'PRIVATE upstream detail',retryable:false}});
+  assert.equal(event.data.error.reason,'insufficient_credits');
+  assert.equal(event.data.error.retryable,false);
+  assert.doesNotMatch(JSON.stringify(event),/PRIVATE/);
+});

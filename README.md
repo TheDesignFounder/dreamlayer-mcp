@@ -134,3 +134,7 @@ ID, cursor and retry key. `local_output_failed` means a completed output could n
 written: fix the path and retry `dreamlayer_download`, not `dreamlayer_generate`.
 Client-side input validation uses `invalid_request`; other unclassified client failures
 use `client_error` and are not evidence that generation failed.
+
+## Error handling updates in beta.3
+
+Malformed event payloads return `response_contract_error` with `retryable: false`, preserving the execution ID, last event ID and idempotency key when known. Check client compatibility or contact support; do not submit replacement work. Interrupted network streams still reconcile canonical state.

@@ -17,6 +17,7 @@ import {
   ApiError,
   InputValidationError,
   RecoveryRequiredError,
+  ResponseContractError,
   StreamIdleError,
   UploadTimeoutError,
   terminalExecutionError,
@@ -83,6 +84,10 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
       isError: true,
     };
   }
+  if (error instanceof ResponseContractError) return { ...ok({ error: {
+    code: "CLIENT_ERROR", reason: "response_contract_error", message: "The API response does not match this client version.",
+    retryable: false, request_id: null, guidance: "Check client compatibility or contact support. Preserve the execution ID and idempotency key; do not start replacement work.",
+  } }), isError: true };
   // A stream that went silent is the failure most likely to have ALREADY been charged
   // for: the server may have finished the job we stopped listening to. Falling through
   // to the generic branch below gave a model a bare abort message, no execution id, and
@@ -474,9 +479,9 @@ async function collect(
       events.push(event);
     }
   } catch (error) {
-    if (error instanceof ApiError || error instanceof InputValidationError) {
+    if (!(error instanceof TypeError || error instanceof StreamIdleError || error instanceof RecoveryRequiredError)) {
       const begun = events.find((event) => event.event === "started");
-      Object.assign(error, { partialOutcome: { execution_id: begun?.data.execution_id ?? executionIdHint ?? null } });
+      if (error !== null && typeof error === "object") Object.assign(error, { partialOutcome: { execution_id: begun?.data.execution_id ?? executionIdHint ?? null, last_event_id: events.at(-1)?.id ?? cursorHint ?? null } });
       throw error;
     }
     interrupted = true;
