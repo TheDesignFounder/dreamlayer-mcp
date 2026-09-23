@@ -63,6 +63,7 @@ test(
       "utf8",
     ),
   );
+  assert.equal(packageJson.publishConfig.tag, "beta");
   assert.equal(packageJson.version, "0.4.0-beta.2");
   assert.equal(packageJson.bin["dreamlayer-mcp"], "dist/index.js");
 

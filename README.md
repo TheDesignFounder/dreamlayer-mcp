@@ -50,6 +50,7 @@ starts at zero credits, and each finished image costs one.
 | `dreamlayer_generate` | Generate or edit. Returns the event stream. |
 | `dreamlayer_execution` | Read canonical state for one execution. |
 | `dreamlayer_events` | Resume a stream after a drop, from a last event id. |
+| `dreamlayer_download` | Save a completed execution to a new local path without generating again. |
 
 ## Operations
 
@@ -123,6 +124,13 @@ After interruption, call `dreamlayer_execution` with the saved execution ID, the
 `dreamlayer_download`. Never start a replacement generation merely because the stream
 closed. Keep the same uploaded asset ID and identical arguments when replaying a key.
 
-[Full tool reference](https://docs.dreamlayer.io/mcp/tools) ·
-[Request limits](https://docs.dreamlayer.io/agent-api/limits) ·
-[Runnable API examples](https://docs.dreamlayer.io/agent-api/examples)
+[MCP setup](https://docs.dreamlayer.io/mcp) ·
+[API overview](https://docs.dreamlayer.io/agent-api) ·
+[Execution recovery](https://docs.dreamlayer.io/agent-api/jobs-and-events)
+
+Abrupt stream failures trigger a canonical status read. If state is still uncertain,
+the error is `temporarily_unavailable` with recovery guidance and the known execution
+ID, cursor and retry key. `local_output_failed` means a completed output could not be
+written: fix the path and retry `dreamlayer_download`, not `dreamlayer_generate`.
+Client-side input validation uses `invalid_request`; other unclassified client failures
+use `client_error` and are not evidence that generation failed.

@@ -10,3 +10,5 @@ Prepared version: `0.4.0-beta.2`. Keep `latest` on the stable image release.
 
 Registry requirements: https://modelcontextprotocol.io/registry/quickstart
 The manifest is prepared metadata, not evidence of a published registry listing.
+
+The package defaults to `publishConfig.tag: beta`; still pass `--tag beta` explicitly. Re-review the recovery fixes before publication. README links use existing pages; the beta.2-only tool/automation pages are held outside the docs site until the packages are published. Restore those pages in a later docs change with the stated minimum version.

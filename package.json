@@ -47,7 +47,8 @@
   },
   "homepage": "https://docs.dreamlayer.io/mcp",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "tag": "beta"
   },
   "mcpName": "io.github.TheDesignFounder/dreamlayer"
 }
