@@ -76,6 +76,7 @@ export type ManagedExecuteInput = {
 };
 
 export class InputValidationError extends Error {}
+export class ResponseContractError extends Error {}
 export class RecoveryRequiredError extends Error {}
 
 export function spriteCreditPrice(frameCount: number): number {
@@ -488,7 +489,7 @@ export function terminalExecutionError(execution: ManagedExecution): ApiError | 
  */
 export function managedEvent(event: string, id: string | null, value: unknown): ManagedEvent {
   if (!MANAGED_EVENT_NAMES.has(event as ManagedEventName) || !isRecord(value)) {
-    throw new Error("Invalid DreamLayer managed event");
+    throw new ResponseContractError("Invalid DreamLayer managed event");
   }
   const data = { ...value };
   const exact = (required: string[], optional: string[] = []): void => {
@@ -497,19 +498,19 @@ export function managedEvent(event: string, id: string | null, value: unknown): 
       !required.every((key) => keys.includes(key)) ||
       !keys.every((key) => required.includes(key) || optional.includes(key))
     ) {
-      throw new Error("Invalid DreamLayer managed event fields");
+      throw new ResponseContractError("Invalid DreamLayer managed event fields");
     }
   };
   const uuid = (key: string): void => {
     const candidate = data[key];
     if (typeof candidate !== "string" || !UUID_PATTERN.test(candidate)) {
-      throw new Error("Invalid DreamLayer managed event identifier");
+      throw new ResponseContractError("Invalid DreamLayer managed event identifier");
     }
   };
   const text = (key: string, maximum: number): void => {
     const candidate = data[key];
     if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > maximum) {
-      throw new Error("Invalid DreamLayer managed event text");
+      throw new ResponseContractError("Invalid DreamLayer managed event text");
     }
   };
 
@@ -530,7 +531,7 @@ export function managedEvent(event: string, id: string | null, value: unknown): 
       exact(["public_job_id", "status"]);
       uuid("public_job_id");
       if (!["queued", "running", "completed", "failed"].includes(String(data.status))) {
-        throw new Error("Invalid DreamLayer managed job status");
+        throw new ResponseContractError("Invalid DreamLayer managed job status");
       }
       break;
     case "question":
@@ -545,12 +546,21 @@ export function managedEvent(event: string, id: string | null, value: unknown): 
       text("download_url", 500);
       break;
     case "done":
-      exact(["status"], ["conversation_id", "message"]);
+      exact(["status"], ["conversation_id", "message", "error"]);
       if (!["needs_input", "completed", "failed", "cancelled"].includes(String(data.status))) {
-        throw new Error("Invalid DreamLayer managed completion status");
+        throw new ResponseContractError("Invalid DreamLayer managed completion status");
       }
       if (data.conversation_id !== undefined) uuid("conversation_id");
       if (data.message !== undefined) text("message", 300);
+      if (data.error !== undefined) {
+        const error = data.error;
+        if (!isRecord(error) || Object.keys(error).sort().join(",") !== "message,reason,retryable" ||
+            !publicReason(error.reason) || typeof error.message !== "string" || typeof error.retryable !== "boolean") {
+          throw new ResponseContractError("Invalid DreamLayer managed completion error");
+        }
+        const reason = publicReason(error.reason)!;
+        data.error = { reason, message: PUBLIC_ERROR_SPECS[reason].message, retryable: PUBLIC_ERROR_SPECS[reason].retryable };
+      }
       break;
   }
   return { id, event: event as ManagedEventName, data };
@@ -588,7 +598,12 @@ async function* readEventStream(
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trim())
         .join("\n");
-      if (event && data) yield { event, id, data: JSON.parse(data) as unknown };
+      if (event && data) {
+        let parsed: unknown;
+        try { parsed = JSON.parse(data); }
+        catch { throw new ResponseContractError("Invalid DreamLayer managed event JSON"); }
+        yield { event, id, data: parsed };
+      }
       boundary = buffer.indexOf("\n\n");
     }
     if (done) return;
@@ -646,7 +661,7 @@ function managedOrigin(value: string): string {
 
 function requireEventStream(response: Response): void {
   if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-    throw new Error("DreamLayer managed endpoint did not return an event stream");
+    throw new ResponseContractError("DreamLayer managed endpoint did not return an event stream");
   }
 }
 
@@ -704,7 +719,7 @@ export class ManagedClient {
         failures = 0;
       } catch (error) {
         if (error instanceof StreamIdleError) throw error;
-        if (error instanceof InputValidationError || (error instanceof ApiError && ![429, 500, 502, 503, 504].includes(error.status))) throw error;
+        if (error instanceof ResponseContractError || error instanceof InputValidationError || (error instanceof ApiError && ![429, 500, 502, 503, 504].includes(error.status))) throw error;
         if (!executionId && error instanceof ApiError) throw error;
         if (!executionId || ++failures > 5) throw new RecoveryRequiredError("Execution state is uncertain. Read saved state before retrying.");
       }
@@ -862,7 +877,7 @@ export class ManagedClient {
     const { response, keepAlive, finish } = stream;
     if (!response.body) {
       finish();
-      throw new Error("DreamLayer managed endpoint returned no body");
+      throw new ResponseContractError("DreamLayer managed endpoint returned no body");
     }
     try {
       for await (const block of readEventStream(response.body, keepAlive)) {

@@ -1,6 +1,6 @@
 # Agent readiness release
 
-Prepared version: `0.4.0-beta.2`. Keep `latest` on the stable image release.
+Prepared version: `0.4.0-beta.3`. Keep `latest` on the stable image release.
 
 1. Pass CI and review the diff, then merge.
 2. With npm publisher authentication, run `pnpm test` and `npm publish --tag beta --access public`.
@@ -11,4 +11,4 @@ Prepared version: `0.4.0-beta.2`. Keep `latest` on the stable image release.
 Registry requirements: https://modelcontextprotocol.io/registry/quickstart
 The manifest is prepared metadata, not evidence of a published registry listing.
 
-The package defaults to `publishConfig.tag: beta`; still pass `--tag beta` explicitly. Re-review the recovery fixes before publication. README links use existing pages; the beta.2-only tool/automation pages are held outside the docs site until the packages are published. Restore those pages in a later docs change with the stated minimum version.
+The package defaults to `publishConfig.tag: beta`; still pass `--tag beta` explicitly. Verify the exact published artifact and retain `latest` at `0.3.0`. The beta.2 documentation remains compatible with beta.3.
