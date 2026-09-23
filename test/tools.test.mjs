@@ -580,7 +580,7 @@ test("balance rejects expanded or inconsistent state without leaking private fie
   api.close();
 
   assert.equal(reply.result.isError, true);
-  assert.equal(payload.error.reason, "generation_failed");
+  assert.equal(payload.error.reason, "client_error");
   assert.equal(payload.error.message, "DreamLayer tool failed.");
   assert.doesNotMatch(JSON.stringify(payload), /do-not-print-this/);
 });

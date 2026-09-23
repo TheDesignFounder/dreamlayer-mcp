@@ -75,8 +75,11 @@ export type ManagedExecuteInput = {
   max_credits?: number;
 };
 
+export class InputValidationError extends Error {}
+export class RecoveryRequiredError extends Error {}
+
 export function spriteCreditPrice(frameCount: number): number {
-  if (!Number.isInteger(frameCount) || frameCount < 7 || frameCount > 100) throw new Error("frame_count must be an integer from 7 to 100");
+  if (!Number.isInteger(frameCount) || frameCount < 7 || frameCount > 100) throw new InputValidationError("frame_count must be an integer from 7 to 100");
   const cents = 14 * Math.min(frameCount, 14) + 7 * Math.max(frameCount - 14, 0);
   return Math.ceil(cents * 10 / 17) / 10;
 }
@@ -84,13 +87,13 @@ export function spriteCreditPrice(frameCount: number): number {
 export function validateSpriteInput(input: ManagedExecuteInput): void {
   if (input.operation !== "sprite_sheet") return;
   const options = input.options;
-  if (!options || (options.action === undefined) === (options.animation_prompt === undefined)) throw new Error("Sprite requests require exactly one of options.action or options.animation_prompt");
-  if (options.action !== undefined && !["walk", "run", "idle"].includes(options.action)) throw new Error("Invalid sprite preset");
-  if (options.animation_prompt !== undefined && (typeof options.animation_prompt !== "string" || !options.animation_prompt.trim() || [...options.animation_prompt].length > 4000)) throw new Error("animation_prompt must contain 1–4000 characters");
-  if (options.animation_mode !== undefined && !["loop", "once"].includes(options.animation_mode)) throw new Error("animation_mode must be loop or once");
+  if (!options || (options.action === undefined) === (options.animation_prompt === undefined)) throw new InputValidationError("Sprite requests require exactly one of options.action or options.animation_prompt");
+  if (options.action !== undefined && !["walk", "run", "idle"].includes(options.action)) throw new InputValidationError("Invalid sprite preset");
+  if (options.animation_prompt !== undefined && (typeof options.animation_prompt !== "string" || !options.animation_prompt.trim() || [...options.animation_prompt].length > 4000)) throw new InputValidationError("animation_prompt must contain 1–4000 characters");
+  if (options.animation_mode !== undefined && !["loop", "once"].includes(options.animation_mode)) throw new InputValidationError("animation_mode must be loop or once");
   const price = spriteCreditPrice(options.frame_count ?? 12);
-  if (options.frame_size !== undefined && ![32, 64, 128, 256, 512, 720, 1080].includes(options.frame_size)) throw new Error("frame_size must be 32, 64, 128, 256, 512, 720 or 1080");
-  if (typeof input.max_credits !== "number" || !Number.isFinite(input.max_credits) || input.max_credits < price || input.max_credits > 100) throw new Error(`This sprite request requires ${price} credits. Supply a sufficient max_credits limit.`);
+  if (options.frame_size !== undefined && ![32, 64, 128, 256, 512, 720, 1080].includes(options.frame_size)) throw new InputValidationError("frame_size must be 32, 64, 128, 256, 512, 720 or 1080");
+  if (typeof input.max_credits !== "number" || !Number.isFinite(input.max_credits) || input.max_credits < price || input.max_credits > 100) throw new InputValidationError(`This sprite request requires ${price} credits. Supply a sufficient max_credits limit.`);
 }
 
 export type ManagedInputAsset = {
@@ -701,14 +704,16 @@ export class ManagedClient {
         failures = 0;
       } catch (error) {
         if (error instanceof StreamIdleError) throw error;
-        if (!executionId || (error instanceof ApiError && ![429, 500, 502, 503, 504].includes(error.status)) || ++failures > 5) throw error;
+        if (error instanceof InputValidationError || (error instanceof ApiError && ![429, 500, 502, 503, 504].includes(error.status))) throw error;
+        if (!executionId && error instanceof ApiError) throw error;
+        if (!executionId || ++failures > 5) throw new RecoveryRequiredError("Execution state is uncertain. Read saved state before retrying.");
       }
-      if (!executionId) throw new Error("Execution stream ended before an identifier was received; reuse your idempotency key.");
+      if (!executionId) throw new RecoveryRequiredError("Execution stream ended before an identifier was received; reuse your idempotency key.");
       const state = await this.getExecution(executionId);
       if (["completed", "failed", "cancelled"].includes(state.status)) {
         if (state.status === "completed") {
           const assets = state.image_job?.finished_assets;
-          if (!Array.isArray(assets) || assets.length !== 1 || typeof assets[0]?.download_url !== "string") throw new Error(`Execution ${executionId} has no downloadable asset yet.`);
+          if (!Array.isArray(assets) || assets.length !== 1 || typeof assets[0]?.download_url !== "string") throw new RecoveryRequiredError(`Execution ${executionId} has no downloadable asset yet.`);
           yield managedEvent("asset", null, { asset_id: assets[0].asset_id, download_url: assets[0].download_url });
         }
         yield managedEvent("done", null, {status: state.status});
@@ -717,7 +722,7 @@ export class ManagedClient {
       await new Promise((resolve) => setTimeout(resolve, Math.min(5000, 500 * 2 ** failures)));
       stream = this.events(executionId, cursor);
     }
-    throw new Error(`Execution ${executionId ?? "unknown"} is still active. Use status to resume; the job has not been cancelled.`);
+    throw new RecoveryRequiredError(`Execution ${executionId ?? "unknown"} is still active. Use status to resume; the job has not been cancelled.`);
   }
 
   /** Resume a stream after a drop. Pass the last event id you actually processed. */

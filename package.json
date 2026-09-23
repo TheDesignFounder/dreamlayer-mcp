@@ -45,9 +45,10 @@
     "type": "git",
     "url": "git+https://github.com/TheDesignFounder/dreamlayer-mcp.git"
   },
-  "homepage": "https://docs.dreamlayer.io/mcp",
+  "homepage": "https://docs.dreamlayer.io/mcp/index",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "tag": "beta"
   },
   "mcpName": "io.github.TheDesignFounder/dreamlayer"
 }

@@ -15,6 +15,8 @@ import { KNOWN_OPERATIONS } from "./client.js";
 import type { ManagedClient, ManagedEvent, ManagedOperation } from "./client.js";
 import {
   ApiError,
+  InputValidationError,
+  RecoveryRequiredError,
   StreamIdleError,
   UploadTimeoutError,
   terminalExecutionError,
@@ -30,6 +32,7 @@ export type ToolResult = {
 const MAX_EVENTS_RETURNED = 256;
 
 class ToolInputError extends Error {}
+class LocalOutputError extends Error {}
 
 function ok(value: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
@@ -84,7 +87,7 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
   // for: the server may have finished the job we stopped listening to. Falling through
   // to the generic branch below gave a model a bare abort message, no execution id, and
   // no basis for deciding whether a retry would pay twice.
-  if (error instanceof StreamIdleError) {
+  if (error instanceof StreamIdleError || error instanceof RecoveryRequiredError) {
     const executionId =
       error !== null && typeof error === "object"
         ? ((error as { partialOutcome?: { execution_id?: string | null } }).partialOutcome
@@ -144,7 +147,7 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
       isError: true,
     };
   }
-  if (error instanceof ToolInputError) {
+  if (error instanceof ToolInputError || error instanceof InputValidationError) {
     return {
       content: [
         {
@@ -163,6 +166,10 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
       isError: true,
     };
   }
+  if (error instanceof LocalOutputError) return { ...ok({ error: {
+    code: "CLIENT_ERROR", reason: "local_output_failed", message: "The completed output could not be saved locally.",
+    retryable: true, request_id: null, guidance: "Fix the destination or choose a new path, then call dreamlayer_download with the same execution_id. Do not generate again.",
+  } }), isError: true };
   // Unknown exceptions are implementation failures, not public response text. Never
   // echo their message: filesystem errors can contain local filenames, and transport
   // errors can contain URLs or other private details.
@@ -173,7 +180,7 @@ function fail(error: unknown, options: { uploadOnly?: boolean } = {}): ToolResul
         text: JSON.stringify({
           error: {
             code: "INTERNAL_ERROR",
-            reason: "generation_failed",
+            reason: "client_error",
             message: "DreamLayer tool failed.",
             retryable: false,
             request_id: null,
@@ -457,6 +464,7 @@ async function collect(
 ): Promise<ToolResult> {
   const events: ManagedEvent[] = [];
   let truncated = false;
+  let interrupted = false;
   try {
     for await (const event of stream) {
       if (events.length >= MAX_EVENTS_RETURNED) {
@@ -466,17 +474,12 @@ async function collect(
       events.push(event);
     }
   } catch (error) {
-    // `started` arrives within seconds carrying the execution id. Letting the error
-    // propagate bare discarded it, so a model whose stream died had no way to find a
-    // job that may already have been charged for. Attached rather than wrapped, so the
-    // `instanceof ApiError` branch in fail() still works.
-    const begun = events.find((event) => event.event === "started");
-    if (error !== null && typeof error === "object") {
-      (error as { partialOutcome?: { execution_id: unknown } }).partialOutcome = {
-        execution_id: begun?.data.execution_id ?? executionIdHint ?? null,
-      };
+    if (error instanceof ApiError || error instanceof InputValidationError) {
+      const begun = events.find((event) => event.event === "started");
+      Object.assign(error, { partialOutcome: { execution_id: begun?.data.execution_id ?? executionIdHint ?? null } });
+      throw error;
     }
-    throw error;
+    interrupted = true;
   }
   const started = events.find((event) => event.event === "started");
   const done = events.find((event) => event.event === "done");
@@ -499,6 +502,11 @@ async function collect(
   const canonicalAssets = canonical?.image_job?.finished_assets;
   const canonicalAsset = Array.isArray(canonicalAssets) && canonicalAssets.length === 1 ? canonicalAssets[0] : undefined;
 
+  if (interrupted && !done && !canonicalStatus) {
+    const error = new RecoveryRequiredError("The event stream was interrupted. Execution state is uncertain.");
+    Object.assign(error, { partialOutcome: { execution_id: executionId || null, last_event_id: events.at(-1)?.id ?? cursorHint ?? null } });
+    throw error;
+  }
   if (status === "failed" && executionId) {
     try {
       const terminal = terminalExecutionError(canonical ?? await client.getExecution(executionId));
@@ -596,7 +604,8 @@ async function callToolInternal(
         const assets = state.image_job?.finished_assets;
         if (state.status !== "completed" || !Array.isArray(assets) || assets.length !== 1 || typeof assets[0]?.download_url !== "string") throw new ToolInputError("This execution has no finished asset yet.");
         const bytes = await client.download(assets[0].download_url);
-        await writeFile(target, bytes, { flag: "wx" });
+        try { await writeFile(target, bytes, { flag: "wx" }); }
+        catch { throw new LocalOutputError(); }
         return ok({ path: target, bytes: bytes.length });
       }
 
@@ -604,11 +613,18 @@ async function callToolInternal(
         throw new ToolInputError("Unknown DreamLayer tool.");
     }
   } catch (error) {
+    if (name === "dreamlayer_download" && !(error instanceof ToolInputError) && !(error instanceof LocalOutputError) && !(error instanceof ApiError)) error = new RecoveryRequiredError("The download was interrupted. Retry dreamlayer_download with the same execution_id; do not generate again.");
     const result = fail(error, { uploadOnly: name === "dreamlayer_upload_image" });
     const value = JSON.parse(result.content[0]!.text);
     if (recoveryKey) value.error.idempotency_key = recoveryKey;
     const partial = (error as { partialOutcome?: { execution_id?: string } } | null)?.partialOutcome;
     if (partial?.execution_id) value.error.execution_id = partial.execution_id;
+    const cursor = (error as { partialOutcome?: { last_event_id?: string | null } } | null)?.partialOutcome?.last_event_id;
+    if (cursor) value.error.last_event_id = cursor;
+    if (name === "dreamlayer_download") {
+      value.error.execution_id = args.execution_id;
+      value.error.guidance = "Read dreamlayer_execution, correct any destination or access issue, then retry dreamlayer_download with the same execution_id. Do not generate again.";
+    }
     return { ...ok(value), isError: true };
   }
 }
