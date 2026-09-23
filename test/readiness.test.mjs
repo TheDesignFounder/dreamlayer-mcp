@@ -76,7 +76,7 @@ test('download write refusal keeps execution identity and never describes genera
 
 test('sprite validation returns actionable errors before transport', async () => {
   const {ManagedClient} = await import('../dist/client.js');
-  const client = new ManagedClient('unused', 'https://api.dreamlayer.io');
+  const client = new ManagedClient('unused', 'http://127.0.0.1:1');
   for (const [extra, pattern] of [[{max_credits: 1}, /5.8 credits/], [{options: {action:'walk', frame_count:7, frame_size:33}}, /frame_size/]]) {
     const result = await callTool(client, 'dreamlayer_generate', {operation:'sprite_sheet', input_asset_id:'owned', options:{action:'walk', frame_count:7}, max_credits:5.8, ...extra});
     assert.equal(result.structuredContent.error.reason, 'invalid_request');

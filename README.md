@@ -124,7 +124,7 @@ After interruption, call `dreamlayer_execution` with the saved execution ID, the
 `dreamlayer_download`. Never start a replacement generation merely because the stream
 closed. Keep the same uploaded asset ID and identical arguments when replaying a key.
 
-[MCP setup](https://docs.dreamlayer.io/mcp) ·
+[MCP setup](https://docs.dreamlayer.io/mcp/index) ·
 [API overview](https://docs.dreamlayer.io/agent-api) ·
 [Execution recovery](https://docs.dreamlayer.io/agent-api/jobs-and-events)
 
