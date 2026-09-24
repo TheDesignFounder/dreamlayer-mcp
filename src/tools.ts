@@ -369,14 +369,14 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        prompt: { type: "string", minLength: 1, maxLength: 4000 },
+        prompt: { type: "string", minLength: 1, maxLength: 4000, description: "What to generate, or how to change the reference, in plain language (1–4000 characters). Required unless respond is used; text_to_image needs it, and a short statement of intent is enough for background_remove or upscale." },
         respond: {
           type: "string",
           minLength: 1,
           maxLength: 4000,
           description: "Answer a previous question. Requires conversation_id.",
         },
-        conversation_id: { type: "string" },
+        conversation_id: { type: "string", description: "UUID of an existing conversation to continue, as returned by an earlier dreamlayer_generate call. Required with respond; omit to start a new conversation." },
         input_asset_id: {
           type: "string",
           description: "From dreamlayer_upload_image. Required for every operation except text_to_image.",
@@ -385,17 +385,17 @@ export const TOOL_DEFINITIONS = [
           type: "object",
           description: "Sprites: supply exactly one of action (legacy preset) or animation_prompt (any subject/action, including turntables). animation_mode defaults to loop for presets, once for custom prompts. Broad requests do not guarantee quality; partial transparency depends on background removal.",
           properties: {
-            action: { type: "string", enum: ["walk", "run", "idle"] },
-            animation_prompt: { type: "string", minLength: 1, maxLength: 4000 },
-            animation_mode: { type: "string", enum: ["loop", "once"] },
-            frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12 },
+            action: { type: "string", enum: ["walk", "run", "idle"], description: "Legacy motion preset. Use either action or animation_prompt, not both." },
+            animation_prompt: { type: "string", minLength: 1, maxLength: 4000, description: "The motion to animate, in plain language (1–4000 characters), e.g. a jump or a turntable." },
+            animation_mode: { type: "string", enum: ["loop", "once"], description: "loop for a seamless cycle, once for a single pass. Defaults to loop for presets and once for custom prompts." },
+            frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12, description: "Number of frames in the sheet (7–100). The sprite price depends only on this value." },
             frame_size: { type: "integer", enum: [32, 64, 128, 256, 512, 720, 1080], default: 512, description: "Square export canvas, not source detail. Larger exports may be enlarged. Pricing depends only on frame count." },
           },
           oneOf: [{ required: ["action"] }, { required: ["animation_prompt"] }],
           additionalProperties: false,
         },
-        max_credits: { type: "number", minimum: 0.1, maximum: 100 },
-        aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4"] },
+        max_credits: { type: "number", minimum: 0.1, maximum: 100, description: "Spending cap for this request in credits (0.1–100, default 1). Image operations require exactly 1. Sprite jobs must be capped at or above the sprite_pricing quote rounded up to one decimal." },
+        aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4"], description: "Output aspect ratio (default 1:1)." },
         // This enum is the COMPILED default. tools/list replaces it with whatever
         // /v1/capabilities advertises, so a model never sees an operation this server
         // will not run. See resolveOperations.
@@ -425,7 +425,7 @@ export const TOOL_DEFINITIONS = [
     description: "Use after a timeout, rate limit or uncertain result to read the existing execution's canonical status. Requires execution_id; costs no credits. Returns state and result details, not a newly generated image. If running, wait and resume events; if completed, download. Do not replace an uncertain paid job.",
     inputSchema: {
       type: "object",
-      properties: { execution_id: { type: "string", minLength: 1 } },
+      properties: { execution_id: { type: "string", minLength: 1, description: "UUID of the execution, as returned by dreamlayer_generate." } },
       required: ["execution_id"],
       additionalProperties: false,
     },
@@ -437,8 +437,8 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        execution_id: { type: "string", minLength: 1 },
-        last_event_id: { type: "string", minLength: 1 },
+        execution_id: { type: "string", minLength: 1, description: "UUID of the execution, as returned by dreamlayer_generate." },
+        last_event_id: { type: "string", minLength: 1, description: "Id of the last event you processed; events after it are returned. Omit to replay from the start." },
       },
       required: ["execution_id"],
       additionalProperties: false,
@@ -447,7 +447,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_download",
     description: "Use when an existing execution completed or a previous download failed. Requires execution_id and an absolute new local path. Saves the finished image or sprite ZIP and returns path/bytes; starts no generation and spends no new credits. Never overwrites. For output_not_ready check status; for local_output_failed repair the path and download the same execution.",
-    inputSchema: { type: "object", properties: { execution_id: { type: "string" }, path: { type: "string", description: "Absolute destination path; an existing file is never overwritten." } }, required: ["execution_id", "path"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { execution_id: { type: "string", description: "UUID of a completed execution, as returned by dreamlayer_generate." }, path: { type: "string", description: "Absolute destination path; an existing file is never overwritten." } }, required: ["execution_id", "path"], additionalProperties: false },
   },
 
 ] as const;
