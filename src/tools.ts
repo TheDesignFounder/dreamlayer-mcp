@@ -340,19 +340,19 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_capabilities",
     description:
-      "Inspect the DreamLayer Agent API contract and the operations this key may run. Calls no provider and spends nothing.",
+      "Use before choosing an image operation or quoting a sprite job. Read supported operations, input limits and sprite_pricing for this API key. Returns the current API contract; no image input, generation or credits required. Do not use this to create an asset.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "dreamlayer_balance",
     description:
-      "Read promotional, purchased, and total credits owned by this API key. Compare the rounded order quote in credits against available for affordability. Funding buckets are rounded down separately and can sum to 0.1 credit less than available; stored fractions are preserved. Calls no provider and spends nothing.",
+      "Use before paid image work to check available credits for this API key. Returns promotional, purchased, available and credit_usd. Compare the complete rounded quote against available; separately rounded buckets may sum to 0.1 less. Costs no credits and does not buy credits. Resolve authentication or balance errors before generation.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "dreamlayer_upload_image",
     description:
-      "Upload one local image for use as a reference. Returns an input_asset_id to pass to dreamlayer_generate. Uploads the selected file to the hosted API; starts no paid generation. Reuse the returned asset ID when retrying the same request.",
+      "Use when an edit, background removal, upscale or sprite animation needs a local reference. Requires an absolute path to PNG, JPEG, WebP or supported camera RAW, up to 200 MB. Uploads that file and returns input_asset_id; starts no paid work. Reuse the asset ID for recovery. Not needed for text-to-image. If upload fails, fix the input or retry upload only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -365,7 +365,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_generate",
     description:
-      "Generate an image from text, edit one reference, remove its background, upscale it, or create a sprite sheet. This starts paid work; obtain the user’s approval for the operation first. Returns execution_id, status, asset, question, and last_event_id. May end asking the user a question instead of producing an image; that is not a failure. Image operations cost one credit. Sprite jobs accept 7–100 frames and return a ZIP. Read sprite_pricing in capabilities and approve the total rounded upward to one decimal credit with max_credits. Sprite jobs have no customer cancellation; failed or expired jobs restore the hold.",
+      "Use when the user needs an original image, raster logo concept, product or marketing visual, an edit, transparent cutout, upscale, or reference-based sprite animation. Starts paid work within the user's authorized scope and budget. Text-to-image needs a prompt; other operations need input_asset_id. Select operation explicitly. Image operations cost one credit; sprite beta accepts 7–100 frames and returns a ZIP. Read sprite_pricing, round the whole quote upward once to 0.1 credit and set max_credits. Returns execution_id, status, asset, question and last_event_id. needs_input is a question; running work must be resumed, not replaced. No sprite cancellation; failed/expired holds are restored. Not a vector-logo, print-validation, product-fidelity or animation-quality guarantee.",
     inputSchema: {
       type: "object",
       properties: {
@@ -422,7 +422,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "dreamlayer_execution",
-    description: "Read canonical state for one execution. Use this after any uncertain response.",
+    description: "Use after a timeout, rate limit or uncertain result to read the existing execution's canonical status. Requires execution_id; costs no credits. Returns state and result details, not a newly generated image. If running, wait and resume events; if completed, download. Do not replace an uncertain paid job.",
     inputSchema: {
       type: "object",
       properties: { execution_id: { type: "string", minLength: 1 } },
@@ -433,7 +433,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_events",
     description:
-      "Resume an execution's events after a drop. Pass the last event id you actually processed.",
+      "Use to resume running work or a dropped stream without another generation charge. Requires execution_id; pass the last_event_id actually processed. Returns bounded events, status and recovery cursor. If still running or rate-limited, back off before polling again. Do not repeatedly call in a tight loop or submit replacement work.",
     inputSchema: {
       type: "object",
       properties: {
@@ -446,7 +446,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "dreamlayer_download",
-    description: "Save the finished asset of an owned execution to a new local file. Sprite jobs return a ZIP.",
+    description: "Use when an existing execution completed or a previous download failed. Requires execution_id and an absolute new local path. Saves the finished image or sprite ZIP and returns path/bytes; starts no generation and spends no new credits. Never overwrites. For output_not_ready check status; for local_output_failed repair the path and download the same execution.",
     inputSchema: { type: "object", properties: { execution_id: { type: "string" }, path: { type: "string", description: "Absolute destination path; an existing file is never overwritten." } }, required: ["execution_id", "path"], additionalProperties: false },
   },
 
