@@ -1,6 +1,6 @@
 # Agent readiness release
 
-Prepared version: `0.4.0-beta.3`. Keep `latest` on the stable image release.
+Prepared version: `0.4.0-beta.4`. Keep `latest` on the stable image release.
 
 1. Pass CI and review the diff, then merge.
 2. With npm publisher authentication, run `pnpm test` and `npm publish --tag beta --access public`.

@@ -830,3 +830,25 @@ test("a malformed operations list is reported, not swallowed", async () => {
   ]);
   assert.match(stderr, /no usable operation list/, "a malformed answer must leave a trace");
 });
+
+test("every input parameter, nested ones included, says what it accepts", async () => {
+  // Smithery's listing (2026-09-24) scored parameter descriptions 3/7 because four
+  // tools shipped bare {type} properties. A model reading tools/list has nothing else
+  // to go on for max_credits or last_event_id, so an undescribed parameter is a
+  // contract gap, not a cosmetic one. Recurse so an options sub-field cannot regress.
+  const api = await listen(fakeApi({}));
+  const tools = await listTools(api.url);
+  api.close();
+
+  const missing = [];
+  const walk = (toolName, properties, prefix) => {
+    for (const [key, schema] of Object.entries(properties ?? {})) {
+      const name = `${toolName}.${prefix}${key}`;
+      if (typeof schema.description !== "string" || schema.description.trim().length < 12) missing.push(name);
+      if (schema.type === "object" && schema.properties) walk(toolName, schema.properties, `${prefix}${key}.`);
+    }
+  };
+  assert.equal(tools.length, 7);
+  for (const tool of tools) walk(tool.name, tool.inputSchema.properties, "");
+  assert.deepEqual(missing, [], `undescribed input parameters: ${missing.join(", ")}`);
+});

@@ -16,13 +16,13 @@ remains `0.3.0`; use the explicit version shown here.
 Add it to your client. Claude Code:
 
 ```bash
-claude mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.3
+claude mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.4
 ```
 
 Codex:
 
 ```bash
-codex mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.3
+codex mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.4
 ```
 
 Cursor, or any other stdio MCP client:
@@ -32,7 +32,7 @@ Cursor, or any other stdio MCP client:
   "mcpServers": {
     "dreamlayer": {
       "command": "npx",
-      "args": ["-y", "@dreamlayer/mcp@0.4.0-beta.3"],
+      "args": ["-y", "@dreamlayer/mcp@0.4.0-beta.4"],
       "env": { "DREAMLAYER_API_KEY": "dlr_live_your_key" }
     }
   }
@@ -141,6 +141,10 @@ ID, cursor and retry key. `local_output_failed` means a completed output could n
 written: fix the path and retry `dreamlayer_download`, not `dreamlayer_generate`.
 Client-side input validation uses `invalid_request`; other unclassified client failures
 use `client_error` and are not evidence that generation failed.
+
+## Parameter descriptions in beta.4
+
+Every input parameter in `tools/list` now states what it accepts, including the nested sprite `options` fields: `prompt`, `conversation_id`, `max_credits` (image operations require exactly 1; sprite jobs at or above the quoted price), `aspect_ratio`, `execution_id` and `last_event_id`. Tool names, arguments and results are unchanged from beta.3.
 
 ## Error handling updates in beta.3
 
