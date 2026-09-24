@@ -3,20 +3,26 @@
 Image generation and editing tools for MCP-compatible AI clients, backed by the
 [DreamLayer Agent API](https://docs.dreamlayer.io/agent-api).
 
-Nothing to clone, nothing to build.
+Use it for raster logo concepts, product imagery, marketing visuals, print artwork
+concepts and game assets. Inspect output quality and task-specific requirements.
+See the [installable agent workflows](https://github.com/TheDesignFounder/dreamlayer-agent-plugin)
+for task guidance and Godot/Unity import examples.
+
+The full workflow below uses the published sprite-capable beta. Stable `latest`
+remains `0.3.0`; use the explicit version shown here.
 
 ## Install
 
 Add it to your client. Claude Code:
 
 ```bash
-claude mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp
+claude mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.3
 ```
 
 Codex:
 
 ```bash
-codex mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp
+codex mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.3
 ```
 
 Cursor, or any other stdio MCP client:
@@ -26,7 +32,7 @@ Cursor, or any other stdio MCP client:
   "mcpServers": {
     "dreamlayer": {
       "command": "npx",
-      "args": ["-y", "@dreamlayer/mcp"],
+      "args": ["-y", "@dreamlayer/mcp@0.4.0-beta.3"],
       "env": { "DREAMLAYER_API_KEY": "dlr_live_your_key" }
     }
   }
@@ -38,7 +44,8 @@ subprocess, so a key exported in your shell does not reach it. That is the most 
 setup failure, and the server exits with an explanation rather than starting up broken.
 
 Get a key at [platform.dreamlayer.io](https://platform.dreamlayer.io). A new account
-starts at zero credits, and each finished image costs one.
+starts at zero credits. Ordinary image operations cost one credit each; sprite
+bundles use the frame-count quote described below.
 
 ## Tools
 
