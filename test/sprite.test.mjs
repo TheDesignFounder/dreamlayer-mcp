@@ -97,3 +97,52 @@ for(const [count,credits] of [[7,5.8],[14,11.6],[15,12],[99,46.6],[100,47],[6,0]
   }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
  });
 }
+
+// --- background: keep --------------------------------------------------------
+// The sheet ships plain instead of transparent, at the flat plain_frame_cents rate.
+import {spriteCreditPrice,wireExecuteInput} from '../dist/client.js';
+
+for(const [count,transparent,plain] of [[7,5.8,2.9],[12,9.9,5.0],[14,11.6,5.8],[15,12,6.2],[100,47,41.2]]){
+ test(`MCP quotes ${count} frames at ${transparent} transparent and ${plain} kept`,()=>{
+  assert.equal(spriteCreditPrice(count),transparent);
+  assert.equal(spriteCreditPrice(count,'remove'),transparent);
+  assert.equal(spriteCreditPrice(count,'keep'),plain);
+ });
+}
+
+test('a kept-background sprite dispatches at the plain cap a transparent one would refuse',async()=>{
+ const received=[];
+ const server=http.createServer((req,res)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
+  received.push(JSON.parse(raw));res.writeHead(200,{'Content-Type':'text/event-stream'});
+  res.end(`id: 1\nevent: started\ndata: ${JSON.stringify({execution_id:eid,conversation_id:eid})}\n\nid: 2\nevent: done\ndata: {"status":"completed"}\n\n`);
+ });});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try{
+  const client=new ManagedClient('dlr_live_fixture',`http://127.0.0.1:${server.address().port}`);
+  const transparent=await callTool(client,'dreamlayer_generate',{operation:'sprite_sheet',input_asset_id:eid,options:{action:'walk',frame_count:12},max_credits:5});
+  assert.ok(transparent.isError);assert.match(transparent.content[0].text,/9\.9 credits/);assert.equal(received.length,0);
+  const kept=await callTool(client,'dreamlayer_generate',{operation:'sprite_sheet',input_asset_id:eid,options:{action:'walk',frame_count:12,background:'keep'},max_credits:5});
+  assert.ok(!kept.isError,JSON.stringify(kept));
+  assert.equal(received.length,1);assert.equal(received[0].options.background,'keep');assert.equal(received[0].max_credits,5);
+ }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+});
+
+test('a spelled-out remove reaches the wire as the same job an omitted one does',()=>{
+ const omitted={operation:'sprite_sheet',input_asset_id:eid,options:{action:'walk',frame_count:12},max_credits:9.9};
+ const spelled={...omitted,options:{...omitted.options,background:'remove'}};
+ assert.deepEqual(wireExecuteInput(spelled),omitted);
+ assert.deepEqual(JSON.stringify(wireExecuteInput(spelled)),JSON.stringify(omitted));
+ const kept={...omitted,options:{...omitted.options,background:'keep'},max_credits:5};
+ assert.equal(wireExecuteInput(kept).options.background,'keep');
+});
+
+test('an unknown background is refused before any dispatch',async()=>{
+ let submissions=0;
+ const server=http.createServer((req,res)=>{submissions++;res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('event: done\ndata: {"status":"completed"}\n\n');});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try{
+  const client=new ManagedClient('dlr_live_fixture',`http://127.0.0.1:${server.address().port}`);
+  const result=await callTool(client,'dreamlayer_generate',{operation:'sprite_sheet',input_asset_id:eid,options:{action:'walk',frame_count:12,background:'transparent'},max_credits:9.9});
+  assert.ok(result.isError);assert.match(result.content[0].text,/background must be remove or keep/);assert.equal(submissions,0);
+ }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+});

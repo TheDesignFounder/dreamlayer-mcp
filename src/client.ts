@@ -71,7 +71,7 @@ export type ManagedExecuteInput = {
   aspect_ratio?: string;
   /** Requires the gateway build that added it. See ManagedOperation. */
   operation?: ManagedOperation;
-  options?: { action?: "walk" | "run" | "idle"; animation_prompt?: string; animation_mode?: "loop" | "once"; frame_count?: number; frame_size?: 32 | 64 | 128 | 256 | 512 | 720 | 1080 };
+  options?: { action?: "walk" | "run" | "idle"; animation_prompt?: string; animation_mode?: "loop" | "once"; frame_count?: number; frame_size?: 32 | 64 | 128 | 256 | 512 | 720 | 1080; background?: SpriteBackground };
   max_credits?: number;
 };
 
@@ -79,10 +79,31 @@ export class InputValidationError extends Error {}
 export class ResponseContractError extends Error {}
 export class RecoveryRequiredError extends Error {}
 
-export function spriteCreditPrice(frameCount: number): number {
+/**
+ * Transparent frames are tiered; plain frames are a flat rate with no tier, because the
+ * tier exists to price background removal and a plain frame never buys any.
+ */
+export const SPRITE_BACKGROUNDS = ["remove", "keep"] as const;
+export type SpriteBackground = (typeof SPRITE_BACKGROUNDS)[number];
+
+export function spriteCreditPrice(frameCount: number, background: SpriteBackground = "remove"): number {
   if (!Number.isInteger(frameCount) || frameCount < 7 || frameCount > 100) throw new InputValidationError("frame_count must be an integer from 7 to 100");
-  const cents = 14 * Math.min(frameCount, 14) + 7 * Math.max(frameCount - 14, 0);
+  const cents = background === "keep"
+    ? 7 * frameCount
+    : 14 * Math.min(frameCount, 14) + 7 * Math.max(frameCount - 14, 0);
   return Math.ceil(cents * 10 / 17) / 10;
+}
+
+/**
+ * "remove" is the default the server applies to an absent field, so sending it spells out
+ * a request that is byte-different from the identical omitted one. The server fingerprints
+ * the options it receives, so passing it through would split one job into two idempotency
+ * identities; normalising here keeps a spelled-out default and an omitted one the same job.
+ */
+export function wireExecuteInput(input: ManagedExecuteInput): ManagedExecuteInput {
+  if (input.options?.background !== "remove") return input;
+  const { background: _dropped, ...options } = input.options;
+  return { ...input, options };
 }
 
 export function validateSpriteInput(input: ManagedExecuteInput): void {
@@ -92,7 +113,8 @@ export function validateSpriteInput(input: ManagedExecuteInput): void {
   if (options.action !== undefined && !["walk", "run", "idle"].includes(options.action)) throw new InputValidationError("Invalid sprite preset");
   if (options.animation_prompt !== undefined && (typeof options.animation_prompt !== "string" || !options.animation_prompt.trim() || [...options.animation_prompt].length > 4000)) throw new InputValidationError("animation_prompt must contain 1–4000 characters");
   if (options.animation_mode !== undefined && !["loop", "once"].includes(options.animation_mode)) throw new InputValidationError("animation_mode must be loop or once");
-  const price = spriteCreditPrice(options.frame_count ?? 12);
+  if (options.background !== undefined && !SPRITE_BACKGROUNDS.includes(options.background)) throw new InputValidationError("background must be remove or keep");
+  const price = spriteCreditPrice(options.frame_count ?? 12, options.background ?? "remove");
   if (options.frame_size !== undefined && ![32, 64, 128, 256, 512, 720, 1080].includes(options.frame_size)) throw new InputValidationError("frame_size must be 32, 64, 128, 256, 512, 720 or 1080");
   if (typeof input.max_credits !== "number" || !Number.isFinite(input.max_credits) || input.max_credits < price || input.max_credits > 100) throw new InputValidationError(`This sprite request requires ${price} credits. Supply a sufficient max_credits limit.`);
 }
@@ -696,7 +718,7 @@ export class ManagedClient {
         "Content-Type": "application/json",
         "Idempotency-Key": options.idempotencyKey,
       },
-      body: JSON.stringify(input),
+      body: JSON.stringify(wireExecuteInput(input)),
     });
     yield* this.parse(stream);
   }
