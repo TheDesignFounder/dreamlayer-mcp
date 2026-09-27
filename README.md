@@ -16,13 +16,13 @@ remains `0.3.0`; use the explicit version shown here.
 Add it to your client. Claude Code:
 
 ```bash
-claude mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.4
+claude mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.5
 ```
 
 Codex:
 
 ```bash
-codex mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.4
+codex mcp add dreamlayer --env DREAMLAYER_API_KEY=dlr_live_your_key -- npx -y @dreamlayer/mcp@0.4.0-beta.5
 ```
 
 Cursor, or any other stdio MCP client:
@@ -32,7 +32,7 @@ Cursor, or any other stdio MCP client:
   "mcpServers": {
     "dreamlayer": {
       "command": "npx",
-      "args": ["-y", "@dreamlayer/mcp@0.4.0-beta.4"],
+      "args": ["-y", "@dreamlayer/mcp@0.4.0-beta.5"],
       "env": { "DREAMLAYER_API_KEY": "dlr_live_your_key" }
     }
   }
@@ -141,6 +141,14 @@ ID, cursor and retry key. `local_output_failed` means a completed output could n
 written: fix the path and retry `dreamlayer_download`, not `dreamlayer_generate`.
 Client-side input validation uses `invalid_request`; other unclassified client failures
 use `client_error` and are not evidence that generation failed.
+
+## Sprite backgrounds in beta.5
+
+`options.background` selects what the frames look like. `remove`, the default, cuts every frame out for transparent frames. `keep` leaves the generated background in place: the frames are plain rather than cut out, and every frame costs the flat `sprite_pricing.plain_frame_cents` with no tier, about half the transparent price. Twelve frames quote 5 credits kept against 9.9 transparent.
+
+beta.4 and earlier reject this field: their `options` schema set `additionalProperties: false`, so a request naming a background never reached the service. Pin beta.5 or later to use it.
+
+A spelled-out `background: "remove"` is normalised away before the request is sent, because it is exactly what an absent field already means and the service fingerprints the options it receives; sending it would otherwise split one job into two idempotency identities.
 
 ## Parameter descriptions in beta.4
 
