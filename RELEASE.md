@@ -1,6 +1,11 @@
 # Agent readiness release
 
-Prepared version: `0.4.0-beta.4`. Keep `latest` on the stable image release.
+Prepared version: `0.4.0-beta.5`. Keep `latest` on the stable image release.
+
+beta.5 lets an agent order a sprite sheet that keeps its background. The `options` schema previously set
+`additionalProperties: false`, so `background` was rejected before it could reach the gateway, and
+`spriteCreditPrice` knew only the transparent tier. Kept frames are a flat `sprite_pricing.plain_frame_cents`
+with no tier: 5 credits for twelve frames instead of 9.9.
 
 1. Pass CI and review the diff, then merge.
 2. With npm publisher authentication, run `pnpm test` and `npm publish --tag beta --access public`.
