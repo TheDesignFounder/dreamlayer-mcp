@@ -340,7 +340,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_capabilities",
     description:
-      "Use before choosing an image operation or quoting a sprite job. Read supported operations, input limits and sprite_pricing for this API key. Returns the current API contract; no image input, generation or credits required. Do not use this to create an asset.",
+      "Use before choosing an image operation or quoting a sprite job. Read supported operations, input limits and sprite_pricing for this API key, including plain_frame_cents for sprites that keep their background. Returns the current API contract; no image input, generation or credits required. Do not use this to create an asset.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -365,7 +365,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_generate",
     description:
-      "Use when the user needs an original image, raster logo concept, product or marketing visual, an edit, transparent cutout, upscale, or reference-based sprite animation. Starts paid work within the user's authorized scope and budget. Text-to-image needs a prompt; other operations need input_asset_id. Select operation explicitly. Image operations cost one credit; sprite beta accepts 7–100 frames and returns a ZIP. Read sprite_pricing, round the whole quote upward once to 0.1 credit and set max_credits. Returns execution_id, status, asset, question and last_event_id. needs_input is a question; running work must be resumed, not replaced. No sprite cancellation; failed/expired holds are restored. Not a vector-logo, print-validation, product-fidelity or animation-quality guarantee.",
+      "Use when the user needs an original image, raster logo concept, product or marketing visual, an edit, transparent cutout, upscale, or reference-based sprite animation. Starts paid work within the user's authorized scope and budget. Text-to-image needs a prompt; other operations need input_asset_id. Select operation explicitly. Image operations cost one credit; sprite beta accepts 7–100 frames and returns a ZIP, transparent unless options.background is keep. Read sprite_pricing, quote a transparent sheet from first_tier_cents and additional_frame_cents and a kept-background sheet from the flat plain_frame_cents, round the whole quote upward once to 0.1 credit and set max_credits. Returns execution_id, status, asset, question and last_event_id. needs_input is a question; running work must be resumed, not replaced. No sprite cancellation; failed/expired holds are restored. Not a vector-logo, print-validation, product-fidelity or animation-quality guarantee.",
     inputSchema: {
       type: "object",
       properties: {
@@ -388,8 +388,9 @@ export const TOOL_DEFINITIONS = [
             action: { type: "string", enum: ["walk", "run", "idle"], description: "Legacy motion preset. Use either action or animation_prompt, not both." },
             animation_prompt: { type: "string", minLength: 1, maxLength: 4000, description: "The motion to animate, in plain language (1–4000 characters), e.g. a jump or a turntable." },
             animation_mode: { type: "string", enum: ["loop", "once"], description: "loop for a seamless cycle, once for a single pass. Defaults to loop for presets and once for custom prompts." },
-            frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12, description: "Number of frames in the sheet (7–100). The sprite price depends only on this value." },
-            frame_size: { type: "integer", enum: [32, 64, 128, 256, 512, 720, 1080], default: 512, description: "Square export canvas, not source detail. Larger exports may be enlarged. Pricing depends only on frame count." },
+            frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12, description: "Number of frames in the sheet (7–100). With frame count and background, this is the whole sprite price." },
+            frame_size: { type: "integer", enum: [32, 64, 128, 256, 512, 720, 1080], default: 512, description: "Square export canvas, not source detail. Larger exports may be enlarged. Frame size never changes the price." },
+            background: { type: "string", enum: ["remove", "keep"], default: "remove", description: "remove cuts every frame out for transparent frames and is the default. keep leaves the generated background in place: the frames are plain, not transparent, and every frame costs the flat plain_frame_cents rate from sprite_pricing, about half the transparent price. Choose keep only when the user does not need transparency." },
           },
           oneOf: [{ required: ["action"] }, { required: ["animation_prompt"] }],
           additionalProperties: false,
