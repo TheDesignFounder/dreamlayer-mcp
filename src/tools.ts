@@ -7,6 +7,7 @@
  * runtime any more.
  */
 import { randomUUID } from "node:crypto";
+import { downloadVideo } from "./video.js";
 import { openAsBlob } from "node:fs";
 import { stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +16,7 @@ import { KNOWN_OPERATIONS } from "./client.js";
 import type { ManagedClient, ManagedEvent, ManagedOperation } from "./client.js";
 import {
   ApiError,
+  isVideoPrompt,
   InputValidationError,
   RecoveryRequiredError,
   ResponseContractError,
@@ -309,6 +311,8 @@ export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedT
       dreamlayer_upload_image: { input_asset_id: { type: "string" }, expires_at: { type: "string" } },
       dreamlayer_execution: { execution_id: { type: "string" }, status: { type: "string" }, image_job: { type: ["object", "null"] } },
       dreamlayer_download: { path: { type: "string" }, bytes: { type: "number" } },
+      dreamlayer_video_quote: {quote_id: {type: "string"}, status: {type: "string"}, selected_model: {type: "string"}, customer_price: {type: "object"}, resolved_settings: {type: "object"}},
+      dreamlayer_video_execute: {execution_id: {type: "string"}, status: {type: "string"}, video_job: {type: "object"}},
     };
     const outputSchema = { type: "object", properties: {
       ...(shapes[tool.name] ?? { execution_id: { type: ["string", "null"] }, status: { type: "string" }, last_event_id: { type: ["string", "null"] }, asset: { type: ["object", "null"] }, question: { type: ["object", "null"] }, events: { type: "array", items: { type: "object" } } }),
@@ -319,7 +323,7 @@ export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedT
     const property = (tool.inputSchema.properties as Record<string, unknown>).operation as
       | { enum?: unknown }
       | undefined;
-    if (!property) return { ...tool, annotations, outputSchema };
+    if (!property || tool.name === "dreamlayer_video_quote") return { ...tool, annotations, outputSchema };
     return {
       name: tool.name,
       annotations,
@@ -337,6 +341,35 @@ export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedT
 }
 
 export const TOOL_DEFINITIONS = [
+  {
+    name: "dreamlayer_video_quote",
+    description: "Plan text-to-video or one-image-to-video without generating. Returns selected model, settings, fixed API-credit price and expiry. No extra images, hidden fallback or fidelity scoring. Execution requires a separate explicit spending ceiling.",
+    inputSchema: {type: "object", additionalProperties: false, required: ["prompt"], properties: {
+      prompt: {type: "string", minLength: 1, maxLength: 4000, description: "Describe the video, preserving requested movement, framing and audio."},
+      operation: {type: "string", enum: ["text_to_video","image_to_video"], description: "Optional explicit operation; otherwise inferred from the image."},
+      input_asset_id: {type: "string", description: "Owned uploaded first-frame image ID; omit for text-to-video."},
+      options: {type: "object", description: "Explicit video settings, validated before any paid submission.", additionalProperties: false, properties: {
+        model: {type: "string", enum: ["auto","flux-3","seedance-2.5"], description: "Explicit model overrides background preferences, not duration limits."},
+        duration_seconds: {type: "integer", minimum: 4, maximum: 30, description: "Default 15; FLUX supports only 5–20."},
+        resolution: {type: "string", enum: ["720p"], description: "Native provider 720p profile, not an exact 720px height guarantee."},
+        generate_audio: {type: "boolean", description: "Off unless requested; must not contradict the prompt."},
+        aspect_ratio: {type: "string", enum: ["16:9","9:16","1:1"], description: "Text-to-video only; image input uses native aspect."},
+      }},
+      context: {type: "object", description: "Requested scene and product context; source pixels are not analyzed.", additionalProperties: false, properties: {
+        use_case: {type: "string", enum: ["product_showcase","general"], description: "Product intent, never an assertion of detected image contents."},
+        requested_background: {type: "string", enum: ["clean_white","non_white","unknown"], description: "Requested output background, not guessed source content."},
+      }},
+    }},
+  },
+  {
+    name: "dreamlayer_video_execute",
+    description: "Accept a ready owned video quote. Spend only within an explicitly user-authorized ceiling. Reuse the SAME idempotency_key after uncertainty; never start replacement generation because a wait ends. A consumed quote recovers the original execution even after expiry.",
+    inputSchema: {type: "object", additionalProperties: false, required: ["quote_id","max_credits","idempotency_key"], properties: {
+      quote_id: {type: "string", description: "Ready quote returned by dreamlayer_video_quote."},
+      max_credits: {type: "number", exclusiveMinimum: 0, maximum: 100, description: "Explicit caller-authorized API-credit ceiling. Never invent spending permission."},
+      idempotency_key: {type: "string", minLength: 1, maxLength: 200, description: "Save before submitting and reuse for all retries of this execution."},
+    }},
+  },
   {
     name: "dreamlayer_capabilities",
     description:
@@ -447,7 +480,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "dreamlayer_download",
-    description: "Use when an existing execution completed or a previous download failed. Requires execution_id and an absolute new local path. Saves the finished image or sprite ZIP and returns path/bytes; starts no generation and spends no new credits. Never overwrites. For output_not_ready check status; for local_output_failed repair the path and download the same execution.",
+    description: "Use when an existing execution completed or a previous download failed. Requires execution_id and an absolute new local path. Saves the finished image, sprite ZIP or video and returns path/bytes; starts no generation and spends no new credits. Never overwrites. For output_not_ready check status; for local_output_failed repair the path and download the same execution.",
     inputSchema: { type: "object", properties: { execution_id: { type: "string", description: "UUID of a completed execution, as returned by dreamlayer_generate." }, path: { type: "string", description: "Absolute destination path; an existing file is never overwritten." } }, required: ["execution_id", "path"], additionalProperties: false },
   },
 
@@ -548,6 +581,11 @@ async function callToolInternal(
   let recoveryKey: string | undefined;
   try {
     switch (name) {
+      case "dreamlayer_video_quote":
+        return ok(await client.quoteVideo(args));
+      case "dreamlayer_video_execute":
+        recoveryKey = String(args.idempotency_key ?? "");
+        return ok(await client.executeVideo(String(args.quote_id ?? ""), Number(args.max_credits), recoveryKey));
       case "dreamlayer_capabilities":
         return ok(await client.getCapabilities());
 
@@ -576,6 +614,9 @@ async function callToolInternal(
       }
 
       case "dreamlayer_generate": {
+        if (!args.operation && isVideoPrompt(String(args.prompt ?? ""))) {
+          return ok(await client.planVideoPrompt(String(args.prompt), typeof args.input_asset_id === "string" ? args.input_asset_id : undefined, typeof args.aspect_ratio === "string" ? args.aspect_ratio : undefined));
+        }
         const { idempotency_key: supplied, ...rest } = args;
         // Generated here rather than demanded from the model. The Python server made
         // it required, so a model had to invent one, and an invented key is not a
@@ -607,6 +648,7 @@ async function callToolInternal(
         const target = String(args.path ?? "");
         if (!path.isAbsolute(target)) throw new ToolInputError("The destination must be an absolute path.");
         const state = await client.getExecution(String(args.execution_id));
+        if (state.video_job) return ok({path: target, bytes: await downloadVideo(client, String(args.execution_id), target)});
         const assets = state.image_job?.finished_assets;
         if (state.status !== "completed" || !Array.isArray(assets) || assets.length !== 1 || typeof assets[0]?.download_url !== "string") throw new ToolInputError("This execution has no finished asset yet.");
         const bytes = await client.download(assets[0].download_url);

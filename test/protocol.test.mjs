@@ -189,6 +189,8 @@ test("completes an MCP initialize and lists its tools over stdio", async () => {
     "dreamlayer_execution",
     "dreamlayer_generate",
     "dreamlayer_upload_image",
+    "dreamlayer_video_execute",
+    "dreamlayer_video_quote",
   ]);
 
   // No local-runtime tool may survive: those died with the runtime, and advertising

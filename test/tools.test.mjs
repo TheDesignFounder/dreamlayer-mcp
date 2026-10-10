@@ -848,7 +848,7 @@ test("every input parameter, nested ones included, says what it accepts", async 
       if (schema.type === "object" && schema.properties) walk(toolName, schema.properties, `${prefix}${key}.`);
     }
   };
-  assert.equal(tools.length, 7);
+  assert.equal(tools.length, 9);
   for (const tool of tools) walk(tool.name, tool.inputSchema.properties, "");
   assert.deepEqual(missing, [], `undescribed input parameters: ${missing.join(", ")}`);
 });
