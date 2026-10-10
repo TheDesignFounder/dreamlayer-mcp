@@ -689,11 +689,19 @@ function requireEventStream(response: Response): void {
 }
 
 export function isVideoPrompt(prompt: string): boolean {
-  const p = prompt.toLowerCase();
+  // Analysis only; submit the original prompt unchanged. Selection stays on the server.
+  const p = prompt.toLowerCase()
+    .replace(/"[^"\n]*"|“[^”\n]*”|(?<!\w)'[^'\n]+'(?!\w)/g, " ")
+    .replace(/’/g, "'").replace(/\b(?:but|however|instead)\b/g, ";")
+    .replace(/\b(?:do not|don't|does not|doesn't|must not|without|avoid|no|not)\b[^.;\n]*/g, " ");
   if (/\b(sprite|spritesheet|sprite sheet|gif)\b/.test(p)) return false;
+  if (/\b(?:static|still|print) (?:image|ad|advertisement|poster)\b/.test(p)) return false;
   if (/\b(txt2vid|img2vid)\b|\b(?:image|text)[- ]to[- ]video\b|\banimate (?:this|the|my) (?:image|photo|product)\b|\b(?:turn|convert)\b.+\binto\b.+\b(?:video|movie)\b/.test(p)) return true;
   const target = /\b(video|movie|footage|image|photo|poster|logo|illustration|thumbnail|cover|icon|screenshot|artwork)\b/.exec(p);
-  return !!target && ["video","movie","footage"].includes(target[0]) && !/^video[- ]games?\b/.test(p.slice(target.index));
+  if (target) return ["video","movie","footage"].includes(target[0]) && !/^video[- ]games?\b/.test(p.slice(target.index));
+  return /\b(?:\d+(?:\.\d+)?|five|ten|fifteen|twenty|thirty)[ -]*(?:seconds?|secs?|minutes?)\b/.test(p)
+    && /\b(cinematic|camera|dolly|pan|talking[- ]head|speaks?|says|narration|voiceover|scene|shot|sequence|motion|animation)\b/.test(p)
+    && /\b(ad|advertisement|commercial|film|clip)\b/.test(p);
 }
 
 export class ManagedClient {

@@ -16,7 +16,7 @@ admits only a ready owned quote under an explicit user-authorized credit ceiling
 Never invent that authorization. Save the idempotency key before execution.
 
 ```json
-{"tool":"dreamlayer_video_quote","arguments":{"operation":"text_to_video","prompt":"A 15-second silent forest video","options":{"duration_seconds":15,"resolution":"720p","generate_audio":false,"aspect_ratio":"16:9"}}}
+{"tool":"dreamlayer_video_quote","arguments":{"operation":"text_to_video","prompt":"A silent forest video","options":{"resolution":"720p","generate_audio":false,"aspect_ratio":"16:9"}}}
 ```
 
 For an image, first use `dreamlayer_upload_image` with an absolute local path,
@@ -36,13 +36,21 @@ not an invented percentage. A bounded wait or lost response does not cancel a
 job; recover its identity with the same quote/key. Already consumed quotes remain
 recoverable after expiry. Retry downloads without generating again.
 
-Default: 15s, native 720p, no audio unless requested; text aspect 16:9. One image
+Default: 10s when absent from both prompt and options, native 720p, no audio unless requested; text aspect 16:9. Explicit durations and issued quotes are unchanged. One image
 uses native/source-driven aspect. Explicit incompatible settings and extra images
-are rejected before charging. White-background image requests and unknown product
-backgrounds prefer Seedance; known non-white/lifestyle scenes prefer FLUX. Duration
-over 20s selects Seedance; over 30s is unsupported. Explicit FLUX at over 20s returns
-an error rather than silently selecting another model. Text/audio quality has not
-been inferred from product-image samples. Source pixels are not analyzed.
+are rejected before charging.
+
+Policy `video-v2-creative-10s-20261010` applies only to new quotes.
+Explicit compatible model first; automatic 4s or 21–30s selects Seedance.
+Complex action, demanding audio, continuity, white/unknown product backgrounds
+and uncertain classification prefer Seedance. Clearly simple non-white product,
+one-speaker talking-head, retro or controlled cinematic-lighting scenes prefer
+FLUX. Complexity beats style; these are preferences, not quality guarantees.
+FLUX accepts 5–20s; Seedance 4–30s. Source pixels are not analyzed.
+Spoken dialogue enables unspecified audio; captions/labels do not. Shot timestamps
+are not duration/aspect settings. Overlong timelines fail before spending rather
+than being compressed; dialogue is never truncated. Live-test defaults remain 5s.
+Existing quotes retain their model, prompt, settings and price.
 
 No automatic cross-provider retry, fidelity scoring, UI change, extension,
 upscaling, keyframes or multiple-reference support is included. Downloads use

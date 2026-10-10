@@ -350,7 +350,7 @@ export const TOOL_DEFINITIONS = [
       input_asset_id: {type: "string", description: "Owned uploaded first-frame image ID; omit for text-to-video."},
       options: {type: "object", description: "Explicit video settings, validated before any paid submission.", additionalProperties: false, properties: {
         model: {type: "string", enum: ["auto","flux-3","seedance-2.5"], description: "Explicit model overrides background preferences, not duration limits."},
-        duration_seconds: {type: "integer", minimum: 4, maximum: 30, description: "Default 15; FLUX supports only 5–20."},
+        duration_seconds: {type: "integer", minimum: 4, maximum: 30, description: "Default 10 when unspecified in both options and prompt; explicit durations and issued quotes are preserved. FLUX supports only 5–20. Timelines are never compressed."},
         resolution: {type: "string", enum: ["720p"], description: "Native provider 720p profile, not an exact 720px height guarantee."},
         generate_audio: {type: "boolean", description: "Off unless requested; must not contradict the prompt."},
         aspect_ratio: {type: "string", enum: ["16:9","9:16","1:1"], description: "Text-to-video only; image input uses native aspect."},

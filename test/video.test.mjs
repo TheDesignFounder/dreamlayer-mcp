@@ -8,11 +8,30 @@ import { ManagedClient, isVideoPrompt } from "../dist/client.js";
 import { downloadVideo } from "../dist/video.js";
 
 test("video intent does not hijack image or sprite requests", () => {
+  assert.equal(isVideoPrompt("Create a 10-second cinematic ad with one slow camera move"), true);
+  assert.equal(isVideoPrompt('Create a 15-second ad. She says: "Hello"'), true);
+  assert.equal(isVideoPrompt("Create a static ad with the caption '15-second video'"), false);
+  assert.equal(isVideoPrompt("Do not make a video. Create a static ad"), false);
+  assert.equal(isVideoPrompt("Create a cinematic ad"), false);
   assert.equal(isVideoPrompt("Create a video game character"), false);
   assert.equal(isVideoPrompt("Make a poster for a video"), false);
   assert.equal(isVideoPrompt("Create a sprite sheet from video"), false);
   assert.equal(isVideoPrompt("Turn this image into a video"), true);
   assert.equal(isVideoPrompt("Make a 15-second video"), true);
+});
+
+test("omitted duration is resolved by the server; quote acceptance never sends new defaults", async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push(JSON.parse(init.body));
+    return Response.json({quote_id: "old-fifteen-second-quote", resolved_settings: {duration_seconds: 15}});
+  };
+  const client = new ManagedClient("fixture", "http://127.0.0.1:8090");
+  await client.quoteVideo({prompt: "Make a video"});
+  await client.executeVideo("old-fifteen-second-quote", 40, "stable");
+  assert.deepEqual(calls, [{prompt: "Make a video"}, {quote_id: "old-fifteen-second-quote", max_credits: 40}]);
 });
 import { callTool } from "../dist/tools.js";
 
