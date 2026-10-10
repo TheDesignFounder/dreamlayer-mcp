@@ -690,7 +690,7 @@ function requireEventStream(response: Response): void {
 
 export function isVideoPrompt(prompt: string): boolean {
   // Analysis only; submit the original prompt unchanged. Selection stays on the server.
-  const affirmative = "(?:(?:the|a|an)\\s+)?(?:she|he|they|woman|man|person|speaker|actor|actress|presenter|narrator|character|show|create|make|use|add|include|keep|place|with)\\b";
+  const affirmative = "(?:(?:the|a|an)\\s+)?(?:she|he|they|woman|man|person|speaker|actor|actress|presenter|narrator|character|show|create|make|use|add|include|keep|place|with|only|just)\\b";
   const negation = new RegExp("\\b(?:do not|don't|does not|doesn't|must not|without|avoid|no|not)\\b[^.;\\n]*?(?=[.;\\n]|,\\s*(?:then\\s+)?" + affirmative + "|\\b(?:and|while|then)\\s+" + affirmative + "|$)", "g");
   const p = prompt.toLowerCase()
     .replace(/"[^"\n]*"|“[^”\n]*”|(?<!\w)'[^'\n]+'(?!\w)/g, " ")
