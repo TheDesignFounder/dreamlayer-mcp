@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.TheDesignFounder/dreamlayer",
-  "description": "Generate and edit images, remove backgrounds, upscale, and create sprite sheets through DreamLayer.",
+  "description": "Generate and edit images, create sprite sheets, and quote and recover video jobs through DreamLayer.",
   "repository": {
     "url": "https://github.com/TheDesignFounder/dreamlayer-mcp",
     "source": "github"
   },
-  "version": "0.4.0-beta.5",
+  "version": "0.5.0-beta.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@dreamlayer/mcp",
-      "version": "0.4.0-beta.5",
+      "version": "0.5.0-beta.0",
       "transport": {
         "type": "stdio"
       },

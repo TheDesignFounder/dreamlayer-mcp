@@ -1,7 +1,7 @@
 {
   "name": "@dreamlayer/mcp",
-  "version": "0.4.0-beta.5",
-  "description": "Image generation and editing tools for MCP-compatible AI clients, backed by the DreamLayer Agent API.",
+  "version": "0.5.0-beta.0",
+  "description": "Image generation, editing and durable video tools for MCP-compatible AI clients, backed by the DreamLayer Agent API.",
   "license": "MIT",
   "type": "module",
   "bin": {

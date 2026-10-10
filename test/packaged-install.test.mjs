@@ -8,6 +8,16 @@ import { test } from "node:test";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 
+test("candidate registry metadata matches the package without changing server identity", async () => {
+  const pkg = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8"));
+  const manifest = JSON.parse(await readFile(path.join(ROOT, "server.json"), "utf8"));
+  assert.equal(manifest.name, pkg.mcpName);
+  assert.equal(manifest.name, "io.github.TheDesignFounder/dreamlayer");
+  assert.equal(manifest.version, pkg.version);
+  assert.equal(manifest.packages[0].identifier, pkg.name);
+  assert.equal(manifest.packages[0].version, pkg.version);
+});
+
 function run(command, args, cwd, env = process.env) {
   return spawnSync(command, args, {
     cwd,
@@ -28,7 +38,7 @@ test(
   assert.equal(packed.status, 0, packed.stderr);
   const metadata = JSON.parse(packed.stdout)[0];
   assert.equal(metadata.name, "@dreamlayer/mcp");
-  assert.equal(metadata.version, "0.4.0-beta.5");
+  assert.equal(metadata.version, "0.5.0-beta.0");
   assert.ok(metadata.integrity.startsWith("sha512-"));
   assert.deepEqual(
     metadata.files.map(({ path: file }) => file).sort(),
@@ -42,6 +52,8 @@ test(
       "dist/index.js",
       "dist/tools.d.ts",
       "dist/tools.js",
+      "dist/video.d.ts",
+      "dist/video.js",
       "package.json",
     ],
   );
@@ -64,7 +76,7 @@ test(
     ),
   );
   assert.equal(packageJson.publishConfig.tag, "beta");
-  assert.equal(packageJson.version, "0.4.0-beta.5");
+  assert.equal(packageJson.version, "0.5.0-beta.0");
   assert.equal(packageJson.bin["dreamlayer-mcp"], "dist/index.js");
 
   const env = { ...process.env, DREAMLAYER_API_KEY: "" };

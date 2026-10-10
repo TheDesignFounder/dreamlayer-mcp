@@ -149,6 +149,7 @@ export type ManagedExecution = {
   conversation_id: string;
   status: string;
   image_job: Record<string, unknown> | null;
+  video_job?: Record<string, unknown> | null;
 };
 
 export const PUBLIC_ERROR_REASONS = [
@@ -687,7 +688,64 @@ function requireEventStream(response: Response): void {
   }
 }
 
+export function isVideoPrompt(prompt: string): boolean {
+  // Analysis only; submit the original prompt unchanged. Selection stays on the server.
+  const affirmative = "(?:(?:the|a|an)\\s+)?(?:she|he|they|woman|man|person|speaker|actor|actress|presenter|narrator|character|show|create|make|use|add|include|keep|place|with|only|just)\\b";
+  const negation = new RegExp("\\b(?:do not|don't|does not|doesn't|must not|without|avoid|no|not)\\b[^.;\\n]*?(?=[.;\\n]|,\\s*(?:then\\s+)?" + affirmative + "|\\b(?:and|while|then)\\s+" + affirmative + "|$)", "g");
+  const p = prompt.toLowerCase()
+    .replace(/"[^"\n]*"|“[^”\n]*”|(?<!\w)'[^'\n]+'(?!\w)/g, " ")
+    .replace(/’/g, "'").replace(/\b(?:but|however|instead)\b/g, ";")
+    .replace(negation, " ");
+  if (/\b(sprite|spritesheet|sprite sheet|gif)\b/.test(p)) return false;
+  if (/\b(?:static|still|print) (?:image|ad|advertisement|poster)\b/.test(p)) return false;
+  if (/\b(txt2vid|img2vid)\b|\b(?:image|text)[- ]to[- ]video\b|\banimate (?:this|the|my) (?:image|photo|product)\b|\b(?:turn|convert)\b.+\binto\b.+\b(?:video|movie)\b/.test(p)) return true;
+  const target = /\b(video|movie|footage|image|photo|poster|logo|illustration|thumbnail|cover|icon|screenshot|artwork)\b/.exec(p);
+  if (target) return ["video","movie","footage"].includes(target[0]) && !/^video[- ]games?\b/.test(p.slice(target.index));
+  return /\b(?:\d+(?:\.\d+)?|five|ten|fifteen|twenty|thirty)[ -]*(?:seconds?|secs?|minutes?)\b/.test(p)
+    && /\b(cinematic|camera|dolly|pan|talking[- ]head|speaks?|says|narration|voiceover|scene|shot|sequence|motion|animation)\b/.test(p)
+    && /\b(ad|advertisement|commercial|film|clip)\b/.test(p);
+}
+
 export class ManagedClient {
+  // Existing image request/stream contracts remain unchanged.
+async quoteVideo(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request("/v1/video/quotes", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+    });
+  }
+
+  async planVideoPrompt(prompt: string, inputAssetId?: string, aspectRatio?: string): Promise<Record<string, unknown>> {
+    return this.request("/v1/execute", {
+      method: "POST", headers: { "Content-Type": "application/json", "DreamLayer-Features": "video-quotes-v1", "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify({ prompt, ...(inputAssetId ? { input_asset_id: inputAssetId } : {}), ...(aspectRatio ? {aspect_ratio: aspectRatio} : {}) }),
+    });
+  }
+
+  async executeVideo(quoteId: string, maxCredits: number, idempotencyKey: string): Promise<ManagedExecution> {
+    if (!quoteId || !idempotencyKey || idempotencyKey.length > 200 || !Number.isFinite(maxCredits) || maxCredits <= 0 || maxCredits > 100)
+      throw new InputValidationError("A quote, explicit spending ceiling and stable idempotency key are required");
+    return this.request("/v1/execute", {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ quote_id: quoteId, max_credits: maxCredits }),
+    });
+  }
+
+  async videoDownloadResponse(executionId: string): Promise<Response> {
+    const response = await fetch(`${this.baseUrl}/v1/video/executions/${encodeURIComponent(executionId)}/asset`, {
+      headers: { Authorization: `Bearer ${this.apiKey}`, "DreamLayer-Version": "1" },
+      redirect: "manual", signal: AbortSignal.timeout(30_000),
+    });
+    if (response.status !== 302) {
+      if (!response.ok) throw await apiError(response);
+      throw new ResponseContractError("Expected owned video redirect");
+    }
+    const url = new URL(response.headers.get("Location") ?? "");
+    if (url.protocol !== "https:" || url.hostname !== "storage.googleapis.com" || url.username || url.password || url.port || url.hash)
+      throw new ResponseContractError("Unapproved video download host");
+    const download = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(120_000) });
+    if (!download.ok) throw new RecoveryRequiredError("Video download unavailable; retry delivery, not generation");
+    return download;
+  }
   private readonly baseUrl: string;
   private capabilitiesPromise: Promise<Record<string, unknown>> | null = null;
 

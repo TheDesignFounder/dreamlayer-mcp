@@ -3,6 +3,62 @@
 Image generation and editing tools for MCP-compatible AI clients, backed by the
 [DreamLayer Agent API](https://docs.dreamlayer.io/agent-api).
 
+This working tree includes the **unpublished 0.5.0-beta.0 video candidate**.
+The published version in the installation section below remains image/sprite-only.
+For local review use Node >=22.12, `pnpm install --frozen-lockfile`, `pnpm build`,
+and configure the MCP client to run `node /absolute/path/to/dist/index.js` with an
+authorized video-enabled API endpoint. This does not publish or deploy anything.
+
+## Video candidate tools
+
+`dreamlayer_video_quote` performs no paid generation. `dreamlayer_video_execute`
+admits only a ready owned quote under an explicit user-authorized credit ceiling.
+Never invent that authorization. Save the idempotency key before execution.
+
+```json
+{"tool":"dreamlayer_video_quote","arguments":{"operation":"text_to_video","prompt":"A silent forest video","options":{"resolution":"720p","generate_audio":false,"aspect_ratio":"16:9"}}}
+```
+
+For an image, first use `dreamlayer_upload_image` with an absolute local path,
+then use the returned owned asset ID:
+
+```json
+{"tool":"dreamlayer_video_quote","arguments":{"operation":"image_to_video","prompt":"Restrained product showcase on a clean white background","input_asset_id":"OWNED_ASSET_UUID","context":{"use_case":"product_showcase","requested_background":"clean_white"},"options":{"model":"auto","duration_seconds":15,"generate_audio":false}}}
+{"tool":"dreamlayer_video_execute","arguments":{"quote_id":"READY_QUOTE_UUID","max_credits":40,"idempotency_key":"SAVED_UNIQUE_KEY"}}
+{"tool":"dreamlayer_execution","arguments":{"execution_id":"EXECUTION_UUID"}}
+{"tool":"dreamlayer_events","arguments":{"execution_id":"EXECUTION_UUID"}}
+{"tool":"dreamlayer_download","arguments":{"execution_id":"EXECUTION_UUID","path":"/absolute/new/result.mp4"}}
+```
+
+The execute result includes `video_job`, not an inline/base64 video. Status and
+events are read-only and never start work. Progress is actual execution stages,
+not an invented percentage. A bounded wait or lost response does not cancel a
+job; recover its identity with the same quote/key. Already consumed quotes remain
+recoverable after expiry. Retry downloads without generating again.
+
+Default: 10s when absent from both prompt and options, native 720p, no audio unless requested; text aspect 16:9. Explicit durations and issued quotes are unchanged. One image
+uses native/source-driven aspect. Explicit incompatible settings and extra images
+are rejected before charging.
+
+Policy `video-v3-scoped-intent-10s-20261010` applies only to new quotes.
+Explicit compatible model first; automatic 4s or 21–30s selects Seedance.
+Complex action, demanding audio, continuity, white/unknown product backgrounds
+and uncertain classification prefer Seedance. Clearly simple non-white product,
+one-speaker talking-head, retro or controlled cinematic-lighting scenes prefer
+FLUX. Complexity beats style; these are preferences, not quality guarantees.
+FLUX accepts 5–20s; Seedance 4–30s. Source pixels are not analyzed.
+Spoken dialogue enables unspecified audio; captions/labels do not. Speech instructions
+are not discarded by a preceding "no music" clause. Non-white is not also white;
+a speaker alone does not establish simple action. Shot timestamps
+are not duration/aspect settings. Overlong timelines fail before spending rather
+than being compressed; dialogue is never truncated. Live-test defaults remain 5s.
+Existing quotes retain their model, prompt, settings and price.
+
+No automatic cross-provider retry, fidelity scoring, UI change, extension,
+upscaling, keyframes or multiple-reference support is included. Downloads use
+owned 30-day storage, bounded streaming, SHA-256 verification and no overwrite.
+`pricing_pending`/disabled access must be reported honestly, not bypassed.
+
 Use it for raster logo concepts, product imagery, marketing visuals, print artwork
 concepts and game assets. Inspect output quality and task-specific requirements.
 See the [installable agent workflows](https://github.com/TheDesignFounder/dreamlayer-agent-plugin)

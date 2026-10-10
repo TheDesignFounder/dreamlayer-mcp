@@ -1,5 +1,19 @@
 # Agent readiness release
 
+## Video candidate — not published
+
+`0.5.0-beta.0` adds video quotes, explicit ceiling-bound execution, status recovery
+and owned downloads. `server.json` identifies this candidate under the existing
+server namespace. Do not publish it until the compatible video backend is live,
+paid route qualification and protected release approvals are complete, and the
+exact tarball is approved. README installation pins below remain on the previously
+published version intentionally. The candidate is available only as a local build.
+
+See the backend `VIDEO_V1_RELEASE.md` for qualification and rollback gates. Local
+fixture tests do not establish production access, actual provider bills or quality.
+
+## Previous image/sprite release record
+
 Prepared version: `0.4.0-beta.5`. Keep `latest` on the stable image release.
 
 beta.5 lets an agent order a sprite sheet that keeps its background. The `options` schema previously set
