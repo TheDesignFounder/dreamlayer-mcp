@@ -8,6 +8,9 @@ import { ManagedClient, isVideoPrompt } from "../dist/client.js";
 import { downloadVideo } from "../dist/video.js";
 
 test("video intent does not hijack image or sprite requests", () => {
+  assert.equal(isVideoPrompt('Create a 10-second ad, no music, she says: "Hello"'), true);
+  assert.equal(isVideoPrompt('Create a 10-second ad, no music and the woman speaks'), true);
+  assert.equal(isVideoPrompt('Create an ad with no video, motion or narration'), false);
   assert.equal(isVideoPrompt("Create a 10-second cinematic ad with one slow camera move"), true);
   assert.equal(isVideoPrompt('Create a 15-second ad. She says: "Hello"'), true);
   assert.equal(isVideoPrompt("Create a static ad with the caption '15-second video'"), false);

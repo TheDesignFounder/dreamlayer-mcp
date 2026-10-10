@@ -40,14 +40,16 @@ Default: 10s when absent from both prompt and options, native 720p, no audio unl
 uses native/source-driven aspect. Explicit incompatible settings and extra images
 are rejected before charging.
 
-Policy `video-v2-creative-10s-20261010` applies only to new quotes.
+Policy `video-v3-scoped-intent-10s-20261010` applies only to new quotes.
 Explicit compatible model first; automatic 4s or 21–30s selects Seedance.
 Complex action, demanding audio, continuity, white/unknown product backgrounds
 and uncertain classification prefer Seedance. Clearly simple non-white product,
 one-speaker talking-head, retro or controlled cinematic-lighting scenes prefer
 FLUX. Complexity beats style; these are preferences, not quality guarantees.
 FLUX accepts 5–20s; Seedance 4–30s. Source pixels are not analyzed.
-Spoken dialogue enables unspecified audio; captions/labels do not. Shot timestamps
+Spoken dialogue enables unspecified audio; captions/labels do not. Speech instructions
+are not discarded by a preceding "no music" clause. Non-white is not also white;
+a speaker alone does not establish simple action. Shot timestamps
 are not duration/aspect settings. Overlong timelines fail before spending rather
 than being compressed; dialogue is never truncated. Live-test defaults remain 5s.
 Existing quotes retain their model, prompt, settings and price.

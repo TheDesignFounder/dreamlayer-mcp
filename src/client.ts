@@ -690,10 +690,12 @@ function requireEventStream(response: Response): void {
 
 export function isVideoPrompt(prompt: string): boolean {
   // Analysis only; submit the original prompt unchanged. Selection stays on the server.
+  const affirmative = "(?:(?:the|a|an)\\s+)?(?:she|he|they|woman|man|person|speaker|actor|actress|presenter|narrator|character|show|create|make|use|add|include|keep|place|with)\\b";
+  const negation = new RegExp("\\b(?:do not|don't|does not|doesn't|must not|without|avoid|no|not)\\b[^.;\\n]*?(?=[.;\\n]|,\\s*(?:then\\s+)?" + affirmative + "|\\b(?:and|while|then)\\s+" + affirmative + "|$)", "g");
   const p = prompt.toLowerCase()
     .replace(/"[^"\n]*"|“[^”\n]*”|(?<!\w)'[^'\n]+'(?!\w)/g, " ")
     .replace(/’/g, "'").replace(/\b(?:but|however|instead)\b/g, ";")
-    .replace(/\b(?:do not|don't|does not|doesn't|must not|without|avoid|no|not)\b[^.;\n]*/g, " ");
+    .replace(negation, " ");
   if (/\b(sprite|spritesheet|sprite sheet|gif)\b/.test(p)) return false;
   if (/\b(?:static|still|print) (?:image|ad|advertisement|poster)\b/.test(p)) return false;
   if (/\b(txt2vid|img2vid)\b|\b(?:image|text)[- ]to[- ]video\b|\banimate (?:this|the|my) (?:image|photo|product)\b|\b(?:turn|convert)\b.+\binto\b.+\b(?:video|movie)\b/.test(p)) return true;
