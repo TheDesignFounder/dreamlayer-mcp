@@ -38,7 +38,7 @@ function fakeApi(behaviour) {
       const body = raw && isJson ? JSON.parse(raw) : {};
       calls.push({ method: request.method, url: request.url, headers: request.headers, body });
 
-      if (request.url === "/v1/capabilities") {
+      if (request.url === "/v1/capabilities?pricing=current") {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
@@ -55,7 +55,7 @@ function fakeApi(behaviour) {
         return;
       }
 
-      if (request.url === "/v1/balance") {
+      if (request.url === "/v1/balance?pricing=current") {
         response.writeHead(behaviour.balanceStatus ?? 200, {
           "content-type": "application/json",
           "cache-control": "private, no-store",
@@ -546,7 +546,7 @@ test("an API failure returns the reason and the request id, not a bare status", 
 test("dreamlayer_balance reads only this authenticated key and starts no paid work", async () => {
   const api = await listen(fakeApi({}));
   const { reply, payload } = await callTool(api.url, "dreamlayer_balance", {});
-  const balanceCall = api.calls.find((call) => call.url === "/v1/balance");
+  const balanceCall = api.calls.find((call) => call.url === "/v1/balance?pricing=current");
   const paidCall = api.calls.some((call) => call.url === "/v1/execute");
   api.close();
 
@@ -560,7 +560,7 @@ test("dreamlayer_balance reads only this authenticated key and starts no paid wo
   assert.equal(balanceCall.method, "GET");
   assert.equal(balanceCall.headers.authorization, "Bearer dlr_live_test_key");
   assert.equal(balanceCall.headers["dreamlayer-version"], "1");
-  assert.equal(balanceCall.url, "/v1/balance", "no account selector may be sent");
+  assert.equal(balanceCall.url, "/v1/balance?pricing=current", "no account selector may be sent");
   assert.equal(paidCall, false);
 });
 
@@ -781,7 +781,7 @@ test("a blip at startup does not pin the built-in list for the whole session", a
   const original = handler.server.listeners("request")[0];
   handler.server.removeAllListeners("request");
   handler.server.on("request", (request, response) => {
-    if (request.url === "/v1/capabilities" && refusals === 0) {
+    if (request.url === "/v1/capabilities?pricing=current" && refusals === 0) {
       refusals += 1;
       response.writeHead(503, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "unavailable" } }));
@@ -848,7 +848,7 @@ test("every input parameter, nested ones included, says what it accepts", async 
       if (schema.type === "object" && schema.properties) walk(toolName, schema.properties, `${prefix}${key}.`);
     }
   };
-  assert.equal(tools.length, 9);
+  assert.equal(tools.length, 10);
   for (const tool of tools) walk(tool.name, tool.inputSchema.properties, "");
   assert.deepEqual(missing, [], `undescribed input parameters: ${missing.join(", ")}`);
 });

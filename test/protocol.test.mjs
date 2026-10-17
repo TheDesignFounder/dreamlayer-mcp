@@ -19,7 +19,7 @@ let protocolApiUrl;
 
 before(async () => {
   protocolApi = createServer((request, response) => {
-    assert.equal(request.url, "/v1/capabilities");
+    assert.equal(request.url, "/v1/capabilities?pricing=current");
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify({
@@ -188,6 +188,7 @@ test("completes an MCP initialize and lists its tools over stdio", async () => {
       "dreamlayer_events",
     "dreamlayer_execution",
     "dreamlayer_generate",
+    "dreamlayer_sprite_price",
     "dreamlayer_upload_image",
     "dreamlayer_video_execute",
     "dreamlayer_video_quote",
