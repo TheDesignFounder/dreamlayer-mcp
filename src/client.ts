@@ -80,12 +80,12 @@ export class ResponseContractError extends Error {}
 export class RecoveryRequiredError extends Error {}
 
 /**
- * Transparent frames are tiered; plain frames are a flat rate with no tier, because the
- * tier exists to price background removal and a plain frame never buys any.
+ * Background intent is independent of the server-owned account price.
  */
 export const SPRITE_BACKGROUNDS = ["remove", "keep"] as const;
 export type SpriteBackground = (typeof SPRITE_BACKGROUNDS)[number];
 
+/** @deprecated Historical estimate only. Use getSpritePrice for new work. */
 export function spriteCreditPrice(frameCount: number, background: SpriteBackground = "remove"): number {
   if (!Number.isInteger(frameCount) || frameCount < 7 || frameCount > 100) throw new InputValidationError("frame_count must be an integer from 7 to 100");
   const cents = background === "keep"
@@ -114,9 +114,12 @@ export function validateSpriteInput(input: ManagedExecuteInput): void {
   if (options.animation_prompt !== undefined && (typeof options.animation_prompt !== "string" || !options.animation_prompt.trim() || [...options.animation_prompt].length > 4000)) throw new InputValidationError("animation_prompt must contain 1–4000 characters");
   if (options.animation_mode !== undefined && !["loop", "once"].includes(options.animation_mode)) throw new InputValidationError("animation_mode must be loop or once");
   if (options.background !== undefined && !SPRITE_BACKGROUNDS.includes(options.background)) throw new InputValidationError("background must be remove or keep");
-  const price = spriteCreditPrice(options.frame_count ?? 12, options.background ?? "remove");
+  const frames = options.frame_count ?? 12;
+  if (!Number.isInteger(frames) || frames < 7 || frames > 100) throw new InputValidationError("frame_count must be an integer from 7 to 100");
   if (options.frame_size !== undefined && ![32, 64, 128, 256, 512, 720, 1080].includes(options.frame_size)) throw new InputValidationError("frame_size must be 32, 64, 128, 256, 512, 720 or 1080");
-  if (typeof input.max_credits !== "number" || !Number.isFinite(input.max_credits) || input.max_credits < price || input.max_credits > 100) throw new InputValidationError(`This sprite request requires ${price} credits. Supply a sufficient max_credits limit.`);
+  // Replays preserve the accepted price. Fresh admission checks the caller's
+  // ceiling against the server-owned rate, never a cached client formula.
+  if (typeof input.max_credits !== "number" || !Number.isFinite(input.max_credits) || input.max_credits <= 0 || input.max_credits > 100) throw new InputValidationError("Supply an explicit max_credits limit greater than zero and at most 100. Read the account sprite estimate before new work.");
 }
 
 export type ManagedInputAsset = {
@@ -315,7 +318,7 @@ export type ManagedBalance = {
   promotional: number;
   purchased: number;
   available: number;
-  credit_usd: "0.17";
+  credit_usd: "0.10" | "0.15" | "0.17" | "0.25";
 };
 
 /**
@@ -465,24 +468,29 @@ export function managedBalance(value: unknown): ManagedBalance {
   if (Object.keys(value).sort().join("\0") !== exact.join("\0")) {
     throw new Error("Invalid DreamLayer balance response");
   }
+  if (typeof value.credit_usd !== "string" || !["0.10", "0.15", "0.17", "0.25"].includes(value.credit_usd)) throw new Error("Invalid DreamLayer balance response");
+  const scale = value.credit_usd === "0.10" || value.credit_usd === "0.15" ? 10000 : 10;
   for (const field of ["promotional", "purchased", "available"] as const) {
-    if (typeof value[field] !== "number" || !Number.isFinite(value[field]) || Number(value[field]) < 0 || Number(value[field]) > Number.MAX_SAFE_INTEGER / 10) {
+    if (typeof value[field] !== "number" || !Number.isFinite(value[field]) || Number(value[field]) < 0 || Number(value[field]) > Number.MAX_SAFE_INTEGER / scale) {
       throw new Error("Invalid DreamLayer balance response");
     }
   }
   if (
-    value.credit_usd !== "0.17" ||
-    Math.round(Number(value.available) * 10) < Math.round(Number(value.promotional) * 10) + Math.round(Number(value.purchased) * 10) ||
-    Math.round(Number(value.available) * 10) > Math.round(Number(value.promotional) * 10) + Math.round(Number(value.purchased) * 10) + 1
+    Math.round(Number(value.available) * scale) < Math.round(Number(value.promotional) * scale) + Math.round(Number(value.purchased) * scale) ||
+    Math.round(Number(value.available) * scale) > Math.round(Number(value.promotional) * scale) + Math.round(Number(value.purchased) * scale) + 1
   ) {
     throw new Error("Invalid DreamLayer balance response");
   }
-  if ([value.promotional, value.purchased, value.available].some(v => Math.abs(Number(v) * 10 - Math.round(Number(v) * 10)) > 1e-7)) throw new Error("Invalid DreamLayer balance response");
+  const places = scale === 10000 ? 4 : 1;
+  if ([value.promotional, value.purchased, value.available].some(v =>
+    !Number.isSafeInteger(Math.round(Number(v) * scale)) ||
+    Number(Number(v).toFixed(places)) !== v
+  )) throw new Error("Invalid DreamLayer balance response");
   return {
     promotional: Number(value.promotional),
     purchased: Number(value.purchased),
     available: Number(value.available),
-    credit_usd: "0.17",
+    credit_usd: value.credit_usd as ManagedBalance["credit_usd"],
   };
 }
 
@@ -832,7 +840,7 @@ async quoteVideo(input: Record<string, unknown>): Promise<Record<string, unknown
   }
 
   async getCapabilities(): Promise<Record<string, unknown>> {
-    this.capabilitiesPromise ??= this.request<Record<string, unknown>>("/v1/capabilities", {}, 10_000).catch(
+    this.capabilitiesPromise ??= this.request<Record<string, unknown>>("/v1/capabilities?pricing=current", {}, 10_000).catch(
       (error: unknown) => {
         // Cache a successful contract for the session, but let a transient startup
         // failure retry. Remembering a rejected promise would pin the fallback forever.
@@ -852,7 +860,24 @@ async quoteVideo(input: Record<string, unknown>): Promise<Record<string, unknown
   }
 
   async getBalance(): Promise<ManagedBalance> {
-    return managedBalance(await this.request<unknown>("/v1/balance"));
+    return managedBalance(await this.request<unknown>("/v1/balance?pricing=current"));
+  }
+
+  /** Free, account-specific estimate. Never a reservation or spending approval. */
+  async getSpritePrice(frameCount = 12, background: SpriteBackground = "remove"): Promise<Record<string, unknown> & { credits: string }> {
+    if (!Number.isInteger(frameCount) || frameCount < 7 || frameCount > 100 || !SPRITE_BACKGROUNDS.includes(background)) throw new InputValidationError("Invalid sprite estimate options");
+    const value = await this.request<unknown>(`/v1/sprite-pricing?frame_count=${frameCount}&background=${background}`);
+    const keys = ["background", "binding", "credits", "frame_count", "price_version", "reference_credit_cents", "reference_usd"];
+    if (!isRecord(value) || Object.keys(value).sort().join("\0") !== keys.join("\0")
+      || value.price_version !== "sprite-base-frame-20261017-v1"
+      || value.frame_count !== frameCount || value.background !== background || value.binding !== false
+      || ![10, 15].includes(Number(value.reference_credit_cents)) || typeof value.reference_credit_cents !== "number"
+      || typeof value.credits !== "string" || !/^\d+(?:\.\d{1,4})?$/.test(value.credits)
+      || Number(value.credits) <= 0 || Number(value.credits) > 100
+      || typeof value.reference_usd !== "string" || !/^\d+\.\d{2}$/.test(value.reference_usd)) {
+      throw new ResponseContractError("Invalid DreamLayer sprite estimate response");
+    }
+    return value as Record<string, unknown> & { credits: string };
   }
 
   cancel(executionId: string): Promise<ManagedExecution> {

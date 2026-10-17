@@ -308,6 +308,7 @@ export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedT
     const shapes: Record<string, Record<string, unknown>> = {
       dreamlayer_capabilities: { api_version: { type: "string" }, operations: { type: "array", items: { type: "string" } } },
       dreamlayer_balance: { available: { type: "number" }, purchased: { type: "number" }, promotional: { type: "number" }, credit_usd: { type: "string" } },
+      dreamlayer_sprite_price: { credits: { type: "string" }, price_version: { type: "string" }, frame_count: { type: "integer" }, background: { type: "string" }, binding: { const: false } },
       dreamlayer_upload_image: { input_asset_id: { type: "string" }, expires_at: { type: "string" } },
       dreamlayer_execution: { execution_id: { type: "string" }, status: { type: "string" }, image_job: { type: ["object", "null"] } },
       dreamlayer_download: { path: { type: "string" }, bytes: { type: "number" } },
@@ -318,7 +319,7 @@ export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedT
       ...(shapes[tool.name] ?? { execution_id: { type: ["string", "null"] }, status: { type: "string" }, last_event_id: { type: ["string", "null"] }, asset: { type: ["object", "null"] }, question: { type: ["object", "null"] }, events: { type: "array", items: { type: "object" } } }),
       error: { type: "object", properties: { reason: { type: "string" }, retryable: { type: "boolean" }, request_id: { type: ["string", "null"] }, execution_id: { type: ["string", "null"] }, idempotency_key: { type: "string" } }, required: ["reason", "retryable"] },
     }, additionalProperties: true };
-    const readOnly = ["dreamlayer_capabilities", "dreamlayer_balance", "dreamlayer_execution", "dreamlayer_events"].includes(tool.name);
+    const readOnly = ["dreamlayer_capabilities", "dreamlayer_balance", "dreamlayer_sprite_price", "dreamlayer_execution", "dreamlayer_events"].includes(tool.name);
     const annotations = { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: readOnly, openWorldHint: true };
     const property = (tool.inputSchema.properties as Record<string, unknown>).operation as
       | { enum?: unknown }
@@ -341,6 +342,14 @@ export async function toolDefinitionsFor(client: ManagedClient): Promise<ListedT
 }
 
 export const TOOL_DEFINITIONS = [
+  {
+    name: "dreamlayer_sprite_price",
+    description: "Before new sprite work, read this API key owner's current credit estimate for the frame count and background. Defaults:12 frames, transparent background. Free and read-only; does not reserve credits or authorize spending. Present credits to the user and use their approved max_credits ceiling. Never raise a ceiling automatically. Price can change before admission, which refuses an insufficient ceiling without charging. Resume accepted work instead of requoting it.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      frame_count: {type: "integer", minimum: 7, maximum: 100, default: 12, description: "Requested frames, from7 to100; defaults to12. Match the later sprite request."},
+      background: {type: "string", enum: ["remove", "keep"], default: "remove", description: "remove for transparent frames, keep to retain the generated background; match the later sprite request."},
+    } },
+  },
   {
     name: "dreamlayer_video_quote",
     description: "Plan text-to-video or one-image-to-video without generating. Returns selected model, settings, fixed API-credit price and expiry. No extra images, hidden fallback or fidelity scoring. Execution requires a separate explicit spending ceiling.",
@@ -373,13 +382,13 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_capabilities",
     description:
-      "Use before choosing an image operation or quoting a sprite job. Read supported operations, input limits and sprite_pricing for this API key, including plain_frame_cents for sprites that keep their background. Returns the current API contract; no image input, generation or credits required. Do not use this to create an asset.",
+      "Use before choosing an image operation. Read supported operations, input limits and current sprite_pricing. For an account-specific sprite estimate, call dreamlayer_sprite_price. Returns the current API contract; no image input, generation or credits required. Do not use this to create an asset.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "dreamlayer_balance",
     description:
-      "Use before paid image work to check available credits for this API key. Returns promotional, purchased, available and credit_usd. Compare the complete rounded quote against available; separately rounded buckets may sum to 0.1 less. Costs no credits and does not buy credits. Resolve authentication or balance errors before generation.",
+      "Use before paid work to check available credits for this API key. Returns promotional, purchased, available and the account purchase rate credit_usd. Compare the complete quote against available, not the sum of separately rounded buckets. Current balances preserve four decimal credits. Costs no credits and does not buy credits. Resolve authentication or balance errors before generation.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -398,7 +407,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "dreamlayer_generate",
     description:
-      "Use when the user needs an original image, raster logo concept, product or marketing visual, an edit, transparent cutout, upscale, or reference-based sprite animation. Starts paid work within the user's authorized scope and budget. Text-to-image needs a prompt; other operations need input_asset_id. Select operation explicitly. Image operations cost one credit; sprite beta accepts 7–100 frames and returns a ZIP, transparent unless options.background is keep. Read sprite_pricing, quote a transparent sheet from first_tier_cents and additional_frame_cents and a kept-background sheet from the flat plain_frame_cents, round the whole quote upward once to 0.1 credit and set max_credits. Returns execution_id, status, asset, question and last_event_id. needs_input is a question; running work must be resumed, not replaced. No sprite cancellation; failed/expired holds are restored. Not a vector-logo, print-validation, product-fidelity or animation-quality guarantee.",
+      "Use when the user needs an original image, raster logo concept, product or marketing visual, an edit, transparent cutout, upscale, or reference-based sprite animation. Starts paid work within the user's authorized scope and budget. Text-to-image needs a prompt; other operations need input_asset_id. Select operation explicitly. Image operations cost one credit; sprites accept 7–100 frames and return a ZIP, transparent unless options.background is keep. Before new sprite work, call dreamlayer_sprite_price for the account estimate and obtain the user's max_credits approval. Do not calculate a price from legacy tiers or raise their ceiling automatically. Returns execution_id, status, asset, question and last_event_id. needs_input is a question; running work must be resumed, not replaced. No sprite cancellation; failed/expired holds are restored. Not a vector-logo, print-validation, product-fidelity or animation-quality guarantee.",
     inputSchema: {
       type: "object",
       properties: {
@@ -423,12 +432,12 @@ export const TOOL_DEFINITIONS = [
             animation_mode: { type: "string", enum: ["loop", "once"], description: "loop for a seamless cycle, once for a single pass. Defaults to loop for presets and once for custom prompts." },
             frame_count: { type: "integer", minimum: 7, maximum: 100, default: 12, description: "Number of frames in the sheet (7–100). With frame count and background, this is the whole sprite price." },
             frame_size: { type: "integer", enum: [32, 64, 128, 256, 512, 720, 1080], default: 512, description: "Square export canvas, not source detail. Larger exports may be enlarged. Frame size never changes the price." },
-            background: { type: "string", enum: ["remove", "keep"], default: "remove", description: "remove cuts every frame out for transparent frames and is the default. keep leaves the generated background in place: the frames are plain, not transparent, and every frame costs the flat plain_frame_cents rate from sprite_pricing, about half the transparent price. Choose keep only when the user does not need transparency." },
+            background: { type: "string", enum: ["remove", "keep"], default: "remove", description: "remove cuts every frame out for transparent frames and is the default. keep leaves the generated background in place. Read dreamlayer_sprite_price for the chosen mode and account; do not assume a fixed percentage discount. Choose keep only when the user does not need transparency." },
           },
           oneOf: [{ required: ["action"] }, { required: ["animation_prompt"] }],
           additionalProperties: false,
         },
-        max_credits: { type: "number", minimum: 0.1, maximum: 100, description: "Spending cap for this request in credits (0.1–100, default 1). Image operations require exactly 1. Sprite jobs must be capped at or above the sprite_pricing quote rounded up to one decimal." },
+        max_credits: { type: "number", minimum: 0.1, maximum: 100, description: "Caller-authorized credit ceiling, at most100. Image operations require exactly1. Sprites require an explicit cap; use the account estimate's credits without rounding it down. Never silently increase the user's cap." },
         aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4"], description: "Output aspect ratio (default 1:1)." },
         // This enum is the COMPILED default. tools/list replaces it with whatever
         // /v1/capabilities advertises, so a model never sees an operation this server
@@ -591,6 +600,9 @@ async function callToolInternal(
 
       case "dreamlayer_balance":
         return ok(await client.getBalance());
+
+      case "dreamlayer_sprite_price":
+        return ok(await client.getSpritePrice(args.frame_count === undefined ? 12 : args.frame_count as number, args.background === undefined ? "remove" : args.background as "remove" | "keep"));
 
       case "dreamlayer_upload_image": {
         const filePath = String(args.path ?? "");
